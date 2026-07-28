@@ -1,0 +1,170 @@
+﻿namespace PersianKeyboardConverter
+{
+    partial class SettingsForm
+    {
+        /// <summary>
+        /// Required designer variable.
+        /// </summary>
+        private System.ComponentModel.IContainer components = null;
+
+        /// <summary>
+        /// Clean up any resources being used.
+        /// </summary>
+        /// <param name="disposing">true if managed resources should be disposed; otherwise, false.</param>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && (components != null))
+            {
+                components.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
+        #region Windows Form Designer generated code
+
+        /// <summary>
+        /// Required method for Designer support - do not modify
+        /// the contents of this method with the code editor.
+        /// </summary>
+        private void InitializeComponent()
+        {
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(SettingsForm));
+            groupBoxHotkey = new GroupBox();
+            labelCurrentHotkey = new Label();
+            buttonChangeHotkey = new Button();
+            groupBoxOptions = new GroupBox();
+            checkBoxEnabled = new CheckBox();
+            checkBoxNotifications = new CheckBox();
+            checkBoxAutostart = new CheckBox();
+            buttonSave = new Button();
+            labelStatus = new Label();
+            groupBoxHotkey.SuspendLayout();
+            groupBoxOptions.SuspendLayout();
+            SuspendLayout();
+            // 
+            // groupBoxHotkey
+            // 
+            groupBoxHotkey.Controls.Add(labelCurrentHotkey);
+            groupBoxHotkey.Controls.Add(buttonChangeHotkey);
+            groupBoxHotkey.Location = new Point(12, 10);
+            groupBoxHotkey.Name = "groupBoxHotkey";
+            groupBoxHotkey.Size = new Size(385, 72);
+            groupBoxHotkey.TabIndex = 0;
+            groupBoxHotkey.TabStop = false;
+            groupBoxHotkey.Text = "Global Hotkey";
+            // 
+            // labelCurrentHotkey
+            // 
+            labelCurrentHotkey.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
+            labelCurrentHotkey.ForeColor = Color.DarkSlateBlue;
+            labelCurrentHotkey.Location = new Point(12, 26);
+            labelCurrentHotkey.Name = "labelCurrentHotkey";
+            labelCurrentHotkey.Size = new Size(260, 24);
+            labelCurrentHotkey.TabIndex = 0;
+            labelCurrentHotkey.TextAlign = ContentAlignment.MiddleLeft;
+            // 
+            // buttonChangeHotkey
+            // 
+            buttonChangeHotkey.Location = new Point(280, 24);
+            buttonChangeHotkey.Name = "buttonChangeHotkey";
+            buttonChangeHotkey.Size = new Size(90, 28);
+            buttonChangeHotkey.TabIndex = 1;
+            buttonChangeHotkey.Text = "Change…";
+            buttonChangeHotkey.UseVisualStyleBackColor = true;
+            buttonChangeHotkey.Click += BtnChangeHotkey_Click;
+            // 
+            // groupBoxOptions
+            // 
+            groupBoxOptions.Controls.Add(checkBoxEnabled);
+            groupBoxOptions.Controls.Add(checkBoxNotifications);
+            groupBoxOptions.Controls.Add(checkBoxAutostart);
+            groupBoxOptions.Location = new Point(12, 92);
+            groupBoxOptions.Name = "groupBoxOptions";
+            groupBoxOptions.Size = new Size(385, 120);
+            groupBoxOptions.TabIndex = 1;
+            groupBoxOptions.TabStop = false;
+            groupBoxOptions.Text = "Options";
+            // 
+            // checkBoxEnabled
+            // 
+            checkBoxEnabled.Checked = true;
+            checkBoxEnabled.CheckState = CheckState.Checked;
+            checkBoxEnabled.Location = new Point(12, 24);
+            checkBoxEnabled.Name = "checkBoxEnabled";
+            checkBoxEnabled.Size = new Size(340, 22);
+            checkBoxEnabled.TabIndex = 0;
+            checkBoxEnabled.Text = "Conversion enabled";
+            checkBoxEnabled.UseVisualStyleBackColor = true;
+            // 
+            // checkBoxNotifications
+            // 
+            checkBoxNotifications.Checked = true;
+            checkBoxNotifications.CheckState = CheckState.Checked;
+            checkBoxNotifications.Location = new Point(12, 52);
+            checkBoxNotifications.Name = "checkBoxNotifications";
+            checkBoxNotifications.Size = new Size(340, 22);
+            checkBoxNotifications.TabIndex = 1;
+            checkBoxNotifications.Text = "Show tray notifications on convert";
+            checkBoxNotifications.UseVisualStyleBackColor = true;
+            // 
+            // checkBoxAutostart
+            // 
+            checkBoxAutostart.Location = new Point(12, 80);
+            checkBoxAutostart.Name = "checkBoxAutostart";
+            checkBoxAutostart.Size = new Size(340, 22);
+            checkBoxAutostart.TabIndex = 2;
+            checkBoxAutostart.Text = "Start with Windows";
+            checkBoxAutostart.UseVisualStyleBackColor = true;
+            // 
+            // buttonSave
+            // 
+            buttonSave.Location = new Point(12, 228);
+            buttonSave.Name = "buttonSave";
+            buttonSave.Size = new Size(120, 32);
+            buttonSave.TabIndex = 2;
+            buttonSave.Text = "Save Settings";
+            buttonSave.UseVisualStyleBackColor = true;
+            buttonSave.Click += buttonSave_Click;
+            // 
+            // labelStatus
+            // 
+            labelStatus.ForeColor = Color.ForestGreen;
+            labelStatus.Location = new Point(148, 234);
+            labelStatus.Name = "labelStatus";
+            labelStatus.Size = new Size(250, 20);
+            labelStatus.TabIndex = 3;
+            // 
+            // SettingsForm
+            // 
+            ClientSize = new Size(402, 293);
+            Controls.Add(groupBoxHotkey);
+            Controls.Add(groupBoxOptions);
+            Controls.Add(buttonSave);
+            Controls.Add(labelStatus);
+            Font = new Font("Segoe UI", 9F);
+            FormBorderStyle = FormBorderStyle.FixedToolWindow;
+            Icon = (Icon)resources.GetObject("$this.Icon");
+            MaximizeBox = false;
+            Name = "SettingsForm";
+            StartPosition = FormStartPosition.CenterScreen;
+            Text = "Persian Keyboard Converter — Settings";
+            groupBoxHotkey.ResumeLayout(false);
+            groupBoxOptions.ResumeLayout(false);
+            ResumeLayout(false);
+        }
+
+        #endregion
+
+        private System.Windows.Forms.GroupBox groupBoxHotkey = null!;
+        private System.Windows.Forms.Label labelCurrentHotkey = null!;
+        private System.Windows.Forms.Button buttonChangeHotkey = null!;
+
+        private System.Windows.Forms.GroupBox groupBoxOptions = null!;
+        private System.Windows.Forms.CheckBox checkBoxEnabled = null!;
+        private System.Windows.Forms.CheckBox checkBoxNotifications = null!;
+        private System.Windows.Forms.CheckBox checkBoxAutostart = null!;
+
+        private System.Windows.Forms.Button buttonSave = null!;
+        private System.Windows.Forms.Label labelStatus = null!;
+    }
+}
