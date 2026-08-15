@@ -122,6 +122,215 @@ namespace PersianKeyboardConverter.Services
             return ConvertViaClipboard(hasSelection);
         }
 
+        /// <summary>
+        /// Corrects the word under the caret (or the active selection) of the focused
+        /// field and replaces it with the best suggestion from the spelling API.
+        /// Must run on the background STA worker (clipboard APIs and SendKeys need
+        /// STA). Returns a short human-readable status string.
+        ///
+        /// Strategy ladder:
+        ///   1. UI Automation — exact selection/caret via TextPattern + ValuePattern.
+        ///   2. ValuePattern + clipboard probe — for controls that expose the field
+        ///      value but not TextPattern (e.g. Chromium-based inputs): reads the
+        ///      field via ValuePattern and writes the correction back with
+        ///      ValuePattern.SetValue (the same mechanism the convert hotkey uses),
+        ///      avoiding a keyboard paste that some apps handle specially.
+        ///   3. Clipboard simulation — universal fallback.
+        /// </summary>
+        public static string CorrectFocusedWord()
+        {
+            AutomationElement? focused = null;
+            try
+            {
+                focused = AutomationElement.FocusedElement;
+            }
+            catch { /* UIA not available */ }
+
+            // ── Strategy 1: UI Automation (most text inputs) ─────────────────
+            if (focused != null && TryCorrectViaUia(focused, out string uiaStatus))
+                return uiaStatus;
+
+            // ── Strategy 2: ValuePattern + clipboard probe ────────────────────
+            if (focused != null && TryGetEditableValue(focused, out string original, out ValuePattern valuePattern))
+            {
+                // Probe the selection via Ctrl+C; preserve the clipboard either way.
+                string? savedClip = null;
+                try { if (Clipboard.ContainsText()) savedClip = Clipboard.GetText(); } catch { }
+
+                string? selected = ProbeSelectedText();
+                int idx = string.IsNullOrEmpty(selected)
+                    ? -1
+                    : original.IndexOf(selected, StringComparison.Ordinal);
+
+                // Ambiguous selection (the word occurs more than once): the first
+                // match may not be the selected occurrence, so defer to the
+                // clipboard path which acts on the real selection.
+                if (idx >= 0 && idx != original.LastIndexOf(selected!, StringComparison.Ordinal))
+                    idx = -1;
+
+                if (idx >= 0)
+                {
+                    string word = selected!.Trim();
+                    if (!string.IsNullOrWhiteSpace(word))
+                    {
+                        // Keep any whitespace that was part of the selection by
+                        // splicing only the trimmed word.
+                        int leadingWs = selected.Length - selected.TrimStart().Length;
+                        int wordStart = idx + leadingWs;
+
+                        string? corrected = SpellCheckService.CorrectText(word);
+                        if (corrected != null && corrected != word)
+                        {
+                            // Restore the clipboard BEFORE the write: SetValue does
+                            // not need it, and if the write throws, the user's
+                            // clipboard is already back in place. Writing through
+                            // ValuePattern is the mechanism that works even where a
+                            // keyboard paste would be intercepted. (Caret/selection
+                            // is not restored here — this tier exists precisely for
+                            // controls without TextPattern.)
+                            RestoreClipboardNow(savedClip);
+                            valuePattern.SetValue(original[..wordStart] + corrected + original[(wordStart + word.Length)..]);
+                            return $"\"{word}\" → \"{corrected}\"";
+                        }
+                        RestoreClipboardNow(savedClip);
+                        return $"No correction found for \"{word}\".";
+                    }
+                }
+
+                RestoreClipboardNow(savedClip); // probe empty/unusable → fall through with the clipboard intact
+            }
+
+            // ── Strategy 3: Clipboard simulation (universal fallback) ─────────
+            return CorrectViaClipboard(null);
+        }
+
+        /// <summary>
+        /// Tries to correct the word under the caret (or the active selection) using
+        /// UI Automation only. Returns true and sets <paramref name="status"/> when
+        /// the request was fully handled; returns false when the caller should fall
+        /// back to a lower strategy.
+        /// </summary>
+        private static bool TryCorrectViaUia(AutomationElement focused, out string status)
+        {
+            status = "";
+            bool? hasSelection = TryDetectSelection(focused);
+
+            // ── Strategy 1: ValuePattern (most text inputs) ───────────────────
+            if (!focused.TryGetCurrentPattern(ValuePattern.Pattern, out object? patternObj)
+                || patternObj is not ValuePattern valuePattern)
+                return false;
+
+            try
+            {
+                // Only trust read-only/empty state for genuine text controls.
+                // Wrapper elements — e.g. the Chromium Document that FocusedElement
+                // returns instead of the real <input> (F10 works in such apps only
+                // because its clipboard path acts on the actual keyboard-focused
+                // control) — must never short-circuit the ladder with a terminal
+                // status, so for them we fall through to the clipboard path.
+                bool isRealEditable = focused.Current.ControlType == ControlType.Edit
+                    || focused.TryGetCurrentPattern(TextPattern.Pattern, out _);
+
+                bool readOnly = (bool)(focused.GetCurrentPropertyValue(ValuePatternIdentifiers.IsReadOnlyProperty) ?? true);
+                if (readOnly && isRealEditable)
+                {
+                    status = "Field is read-only.";
+                    return true;
+                }
+
+                string original = valuePattern.Current.Value ?? string.Empty;
+                if (isRealEditable && string.IsNullOrEmpty(original))
+                {
+                    status = "Field is empty.";
+                    return true;
+                }
+
+                // The word to correct: the active selection when present, otherwise
+                // the word around the caret.
+                if (!TryResolveWordRange(focused, original, hasSelection, out int start, out int end))
+                    return false;
+
+                string word = original[start..end];
+                string? corrected = SpellCheckService.CorrectText(word);
+                if (corrected == null || corrected == word)
+                {
+                    status = $"No correction found for \"{word}\".";
+                    return true;
+                }
+
+                valuePattern.SetValue(original[..start] + corrected + original[end..]);
+
+                // Re-select the corrected word so the change is visible and the
+                // caret lands inside it.
+                if (focused.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj)
+                    && tpObj is TextPattern textPattern)
+                    SelectRange(textPattern, start, start + corrected.Length);
+
+                status = $"\"{word}\" → \"{corrected}\"";
+                return true;
+            }
+            catch
+            {
+                return false; // fall through to lower strategies
+            }
+        }
+
+        /// <summary>
+        /// Returns true when <paramref name="element"/> exposes an editable
+        /// ValuePattern, with its current value in <paramref name="value"/> and the
+        /// pattern in <paramref name="valuePattern"/>.
+        /// </summary>
+        private static bool TryGetEditableValue(AutomationElement element, out string value, out ValuePattern valuePattern)
+        {
+            value = "";
+            valuePattern = null!;
+            if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out object? patternObj)
+                || patternObj is not ValuePattern vp)
+                return false;
+
+            bool readOnly = (bool)(element.GetCurrentPropertyValue(ValuePatternIdentifiers.IsReadOnlyProperty) ?? true);
+            if (readOnly) return false;
+
+            value = vp.Current.Value ?? string.Empty;
+            valuePattern = vp;
+            return true;
+        }
+
+        /// <summary>
+        /// Copies the current selection (Ctrl+C) and returns the copied text, or
+        /// null when nothing was selected / the copy didn't land (up to ~600 ms).
+        /// </summary>
+        private static string? ProbeSelectedText()
+        {
+            try { Clipboard.Clear(); } catch { }
+            Thread.Sleep(50);
+            SendKeys.SendWait("^c");
+
+            for (int i = 0; i < 12; i++)
+            {
+                Thread.Sleep(50);
+                try
+                {
+                    if (Clipboard.ContainsText())
+                    {
+                        string text = Clipboard.GetText();
+                        if (!string.IsNullOrEmpty(text)) return text;
+                    }
+                }
+                catch { /* clipboard busy, retry */ }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Restores previously saved clipboard text immediately (STA required).
+        /// </summary>
+        private static void RestoreClipboardNow(string? savedText)
+        {
+            if (savedText == null) return;
+            try { Clipboard.SetText(savedText, TextDataFormat.UnicodeText); } catch { }
+        }
+
         // ─────────────────────────────────────────────────────────────────────────
         // UI Automation selection helpers
         // ─────────────────────────────────────────────────────────────────────────
@@ -162,26 +371,10 @@ namespace PersianKeyboardConverter.Services
             newValue = null;
             convertedChars = 0;
 
-            if (!element.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj) || tpObj is not TextPattern textPattern)
-                return false;
-
-            TextPatternRange[] selections = textPattern.GetSelection();
-            if (selections.Length == 0)
-                return false;
-
-            int start = Math.Clamp(GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.Start), 0, fullText.Length);
-            int end = Math.Clamp(GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.End), 0, fullText.Length);
-            if (start >= end)
+            if (!TryGetSelectionBounds(element, fullText, out int start, out int end))
                 return false;
 
             string selected = fullText.Substring(start, end - start);
-
-            // Sanity check: the region resolved through TextPattern must match what
-            // the selection actually contains. If they differ (line-ending or content
-            // differences between TextPattern and ValuePattern), bail to the clipboard
-            // path instead of silently corrupting the field.
-            if (!string.Equals(selected, selections[0].GetText(-1), StringComparison.Ordinal))
-                return false;
 
             var direction = KeyboardMapper.IsMostlyPersian(selected)
                 ? KeyboardMapper.Direction.PersianToEnglish
@@ -194,10 +387,73 @@ namespace PersianKeyboardConverter.Services
             // is character-by-character, so prefix lengths are exact) so the
             // selection range is preserved after the rewrite.
             int newStart = KeyboardMapper.Convert(fullText[..start], direction).Length;
-            SelectRange(textPattern, newStart, newStart + converted.Length);
+            if (element.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj) && tpObj is TextPattern textPattern)
+                SelectRange(textPattern, newStart, newStart + converted.Length);
             convertedChars = selected.Length;
             return true;
         }
+
+        /// <summary>
+        /// Resolves the active selection of <paramref name="element"/> into (start, end)
+        /// offsets into <paramref name="fullText"/>. Returns false when there is no
+        /// selection, when it can't be resolved, or when the text reported by TextPattern
+        /// doesn't match the ValuePattern substring (line-ending/content differences) —
+        /// callers then fall back to the clipboard path instead of corrupting the field.
+        /// </summary>
+        private static bool TryGetSelectionBounds(AutomationElement element, string fullText, out int start, out int end)
+        {
+            start = end = 0;
+            if (!element.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj) || tpObj is not TextPattern textPattern)
+                return false;
+
+            TextPatternRange[] selections = textPattern.GetSelection();
+            if (selections.Length == 0)
+                return false;
+
+            start = Math.Clamp(GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.Start), 0, fullText.Length);
+            end = Math.Clamp(GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.End), 0, fullText.Length);
+            if (start >= end)
+                return false;
+
+            // Sanity check: the region resolved through TextPattern must match what the
+            // selection actually contains (see comment above).
+            return string.Equals(fullText.Substring(start, end - start), selections[0].GetText(-1), StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Resolves the word range to correct: the active selection when present,
+        /// otherwise the word around the caret. Returns false when neither is usable.
+        /// </summary>
+        private static bool TryResolveWordRange(AutomationElement element, string fullText, bool? hasSelection, out int start, out int end)
+        {
+            start = end = 0;
+
+            if (hasSelection == true && TryGetSelectionBounds(element, fullText, out start, out end))
+                return !string.IsNullOrWhiteSpace(fullText[start..end]);
+
+            int caret = TryGetCaretOffset(element);
+            if (caret < 0) return false;
+
+            (start, end) = GetWordBounds(fullText, caret);
+            return start < end;
+        }
+
+        /// <summary>
+        /// Returns the (start, end) offsets of the word surrounding the caret in
+        /// <paramref name="text"/>. Word characters are letters/digits in any script
+        /// (Persian or English), so the caret can sit anywhere inside the word.
+        /// </summary>
+        private static (int Start, int End) GetWordBounds(string text, int caret)
+        {
+            int start = caret;
+            while (start > 0 && IsWordChar(text[start - 1])) start--;
+            int end = caret;
+            while (end < text.Length && IsWordChar(text[end])) end++;
+            return (start, end);
+        }
+
+        private static bool IsWordChar(char c)
+            => char.IsLetterOrDigit(c) || KeyboardMapper.IsPersian(c) || c == '\u200C'; // ZWNJ (نیم‌فاصله)
 
         /// <summary>
         /// Returns the caret's character offset in the field, or -1 when it can't
@@ -319,22 +575,117 @@ namespace PersianKeyboardConverter.Services
             finally
             {
                 // 7. Restore previous clipboard after the paste has been consumed
-                if (savedText != null)
-                {
-                    string text = savedText;
-                    ThreadPool.QueueUserWorkItem(_ =>
-                    {
-                        Thread.Sleep(600);
-                        var t = new Thread(() =>
-                        {
-                            try { Clipboard.SetText(text, TextDataFormat.UnicodeText); } catch { }
-                        });
-                        t.SetApartmentState(ApartmentState.STA);
-                        t.Start();
-                        t.Join(1000);
-                    });
-                }
+                RestoreClipboardLater(savedText);
             }
+        }
+
+        /// <summary>
+        /// Clipboard-based spelling correction for controls without ValuePattern.
+        /// Copies the active selection (or the word under the caret), checks it
+        /// online, and pastes the best correction back. Mirrors
+        /// <see cref="ConvertViaClipboard"/> — the clipboard is preserved and
+        /// restored afterwards.
+        /// </summary>
+        private static string CorrectViaClipboard(bool? selectionState)
+        {
+            // 1. Preserve existing clipboard content
+            string? savedText = null;
+            try { if (Clipboard.ContainsText()) savedText = Clipboard.GetText(); } catch { }
+
+            try
+            {
+                // 2. Wait for physical modifier keys (hotkey) to be released,
+                //    otherwise SendKeys gets polluted (see ConvertViaClipboard).
+                ReleaseModifiers();
+
+                // 3. If there is no selection, select the word under the caret:
+                //    jump to the start of the word, then extend the selection right.
+                bool hasSelection = selectionState ?? ProbeSelection();
+                if (!hasSelection)
+                {
+                    SendKeys.SendWait("^{LEFT}");
+                    Thread.Sleep(50);
+                    SendKeys.SendWait("^+{RIGHT}");
+                    Thread.Sleep(80);
+                }
+
+                // 4. CLEAR clipboard first so we can detect whether copy really happened
+                try { Clipboard.Clear(); } catch { }
+                Thread.Sleep(50);
+
+                SendKeys.SendWait("^c");
+                string original = PollClipboard();
+                if (string.IsNullOrEmpty(original))
+                {
+                    // The first copy may have raced a slow target app; retry once.
+                    try { Clipboard.Clear(); } catch { }
+                    Thread.Sleep(80);
+                    SendKeys.SendWait("^c");
+                    original = PollClipboard();
+                }
+
+                if (string.IsNullOrEmpty(original))
+                    return "Clipboard fallback: could not read any selected text.";
+
+                // 5. Spell-check online and paste the correction back (if any).
+                //    The word selection shortcut can include surrounding whitespace,
+                //    so check the trimmed core and preserve the whitespace on paste.
+                string trimmed = original.Trim();
+                if (trimmed.Length == 0)
+                    return "Nothing to correct (empty or no selection).";
+
+                string? corrected = SpellCheckService.CorrectText(trimmed);
+                if (corrected == null || corrected == trimmed)
+                    return $"No correction found for \"{trimmed}\".";
+
+                int leadingWs = original.Length - original.TrimStart().Length;
+                int trailingWs = original.Length - original.TrimEnd().Length;
+                string paste = original[..leadingWs] + corrected
+                    + (trailingWs > 0 ? original[^trailingWs..] : "");
+
+                for (int i = 0; i < 5; i++)           // SetText can fail if clipboard is locked
+                {
+                    try { Clipboard.SetText(paste, TextDataFormat.UnicodeText); break; }
+                    catch { Thread.Sleep(50); }
+                }
+
+                Thread.Sleep(80);
+                SendKeys.SendWait("^v");
+                Thread.Sleep(150);                    // let target app consume the paste
+
+                return $"\"{trimmed}\" → \"{corrected}\"";
+            }
+            catch (Exception ex)
+            {
+                return $"Clipboard fallback failed: {ex.Message}";
+            }
+            finally
+            {
+                // 6. Restore previous clipboard after the paste has been consumed
+                RestoreClipboardLater(savedText);
+            }
+        }
+
+        /// <summary>
+        /// Restores previously saved clipboard text shortly after a paste has been
+        /// consumed, on an isolated background STA thread (clipboard APIs need STA).
+        /// </summary>
+        private static void RestoreClipboardLater(string? savedText)
+        {
+            if (savedText == null) return;
+
+            string text = savedText;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Thread.Sleep(600);
+                var t = new Thread(() =>
+                {
+                    try { Clipboard.SetText(text, TextDataFormat.UnicodeText); } catch { }
+                });
+                t.SetApartmentState(ApartmentState.STA);
+                t.Start();
+                t.Join(1000);
+            });
         }
 
         /// <summary>

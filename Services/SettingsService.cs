@@ -10,6 +10,8 @@ namespace PersianKeyboardConverter.Services
     {
         public string HotkeyKey { get; set; } = "F10";
         public uint HotkeyModifiers { get; set; } = HotkeyManager.MOD_NONE | HotkeyManager.MOD_NOREPEAT;
+        public string CorrectionHotkeyKey { get; set; } = "F9";
+        public uint CorrectionHotkeyModifiers { get; set; } = HotkeyManager.MOD_NONE | HotkeyManager.MOD_NOREPEAT;
         public bool ConversionEnabled { get; set; } = true;
         public bool ShowNotifications { get; set; } = true;
         public bool StartWithWindows { get; set; } = false;
@@ -69,6 +71,18 @@ namespace PersianKeyboardConverter.Services
         public static void SetHotkeyKey(Keys key)
         {
             Current.HotkeyKey = key.ToString();
+        }
+
+        public static Keys GetCorrectionHotkeyKey()
+        {
+            if (Enum.TryParse<Keys>(Current.CorrectionHotkeyKey, out Keys k))
+                return k;
+            return Keys.F9;
+        }
+
+        public static void SetCorrectionHotkeyKey(Keys key)
+        {
+            Current.CorrectionHotkeyKey = key.ToString();
         }
 
         private static void ApplyAutostart(bool enable)

@@ -22,6 +22,7 @@ namespace PersianKeyboardConverter
 
             _hotkeyManager = new HotkeyManager();
             _hotkeyManager.HotkeyPressed += OnHotkeyPressed;
+            _hotkeyManager.CorrectionHotkeyPressed += OnCorrectionHotkeyPressed;
 
             _trayIcon = new NotifyIcon
             {
@@ -32,9 +33,24 @@ namespace PersianKeyboardConverter
             };
             _trayIcon.DoubleClick += (_, _) => ShowSettings();
 
-            // Register hotkey from saved settings
+            // Register hotkeys from saved settings. If one can't be registered
+            // (another application owns the key), fall back to the default and warn
+            // the user so a dead hotkey is never silent.
             bool ok = _hotkeyManager.Register(SettingsService.GetHotkeyKey(), SettingsService.Current.HotkeyModifiers);
-            if (!ok) _hotkeyManager.RegisterDefault(); // fallback to F10
+            if (!ok)
+            {
+                bool okDefault = _hotkeyManager.RegisterDefault(); // fallback to F10
+                if (!okDefault)
+                    WarnAtStartup($"The convert hotkey ({SettingsService.GetHotkeyKey()}) is in use by another application and the default (F10) is unavailable too — conversion hotkey is disabled.");
+            }
+
+            bool okCorrection = _hotkeyManager.RegisterCorrection(SettingsService.GetCorrectionHotkeyKey(), SettingsService.Current.CorrectionHotkeyModifiers);
+            if (!okCorrection)
+            {
+                bool okDefaultCorrection = _hotkeyManager.RegisterCorrectionDefault(); // fallback to F9
+                if (!okDefaultCorrection)
+                    WarnAtStartup($"The correction hotkey ({SettingsService.GetCorrectionHotkeyKey()}) is in use by another application and the default (F9) is unavailable too — spell correction is disabled until you pick a free key in Settings.");
+            }
         }
 
         // ── Context menu ──────────────────────────────────────────────────
@@ -44,6 +60,7 @@ namespace PersianKeyboardConverter
 
             var openItem = new ToolStripMenuItem("Open Settings", null, (_, _) => ShowSettings());
             var changeHotkeyItem = new ToolStripMenuItem("Change Hotkey…", null, (_, _) => ChangeHotkeyInteractive());
+            var changeCorrectionHotkeyItem = new ToolStripMenuItem("Change Correction Hotkey…", null, (_, _) => ChangeCorrectionHotkeyInteractive());
 
             _enabledItem = new ToolStripMenuItem("Conversion: Enabled")
             {
@@ -63,6 +80,7 @@ namespace PersianKeyboardConverter
             {
                 openItem,
                 changeHotkeyItem,
+                changeCorrectionHotkeyItem,
                 new ToolStripSeparator(),
                 _enabledItem,
                 new ToolStripSeparator(),
@@ -99,6 +117,96 @@ namespace PersianKeyboardConverter
             }
         }
 
+        private int _correctionInProgress;
+        private long _correctionStartedAt;
+
+        private void OnCorrectionHotkeyPressed(object? sender, EventArgs e)
+        {
+            if (!SettingsService.Current.ConversionEnabled) return;
+
+            // Re-entrancy guard. A stale in-progress flag older than 30s (e.g. from
+            // a previous run that never finished) is treated as free so F9 can never
+            // be wedged permanently — but the flag is re-acquired atomically so the
+            // guard stays closed for the new run.
+            if (Interlocked.CompareExchange(ref _correctionInProgress, 1, 0) != 0)
+            {
+                if (Environment.TickCount64 - Interlocked.Read(ref _correctionStartedAt) <= 30_000)
+                    return; // already running
+
+                Interlocked.Exchange(ref _correctionInProgress, 0); // clear stale run
+                if (Interlocked.CompareExchange(ref _correctionInProgress, 1, 0) != 0)
+                    return; // lost the race to another press
+            }
+
+            long runStart = Environment.TickCount64;
+            Interlocked.Exchange(ref _correctionStartedAt, runStart);
+
+            // Small delay to ensure focus hasn't shifted away from the text field
+            Thread.Sleep(50);
+
+            // The spelling lookup can take a couple of seconds, so run it on an
+            // isolated background STA thread (clipboard APIs need STA). Both the UIA
+            // path and the clipboard fallback run here — SendKeys and the clipboard
+            // work fine from this thread — so the UI thread (and the tray icon) is
+            // never blocked by the network lookup. Only the tray balloon is
+            // marshalled back to the UI thread.
+            var uiContext = SynchronizationContext.Current;
+            var worker = new Thread(() =>
+            {
+                try
+                {
+                    string result;
+                    try
+                    {
+                        result = TextService.CorrectFocusedWord();
+                    }
+                    catch (Exception ex)
+                    {
+                        result = $"Error: {ex.Message}";
+                    }
+
+                    string final = result;
+                    Action show = () =>
+                    {
+                        if (SettingsService.Current.ShowNotifications)
+                            _trayIcon.ShowBalloonTip(3000, "Spell Correction", final, ToolTipIcon.Info);
+                    };
+                    if (uiContext != null) uiContext.Post(_ => show(), null);
+                    else show();
+                }
+                finally
+                {
+                    // Only release the guard if this is still the current run, so a
+                    // stale (previously hung) worker can't clear the flag of a newer run.
+                    if (Interlocked.Read(ref _correctionStartedAt) == runStart)
+                        Interlocked.Exchange(ref _correctionInProgress, 0);
+                }
+            })
+            { IsBackground = true };
+            worker.SetApartmentState(ApartmentState.STA);
+            worker.Start();
+        }
+
+        /// <summary>
+        /// Shows a warning balloon shortly after startup (deferred so the tray icon
+        /// is ready) when a global hotkey could not be registered.
+        /// </summary>
+        private void WarnAtStartup(string message)
+        {
+            var timer = new System.Windows.Forms.Timer { Interval = 2500 };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                try
+                {
+                    _trayIcon.ShowBalloonTip(6000, "Persian Keyboard Converter", message, ToolTipIcon.Warning);
+                }
+                catch { /* icon already disposed before the tick fired */ }
+            };
+            timer.Start();
+        }
+
         // ── Public API for MainForm ───────────────────────────────────────
 
         public bool ChangeHotkey(Keys key, uint modifiers)
@@ -108,6 +216,18 @@ namespace PersianKeyboardConverter
             {
                 SettingsService.SetHotkeyKey(key);
                 SettingsService.Current.HotkeyModifiers = modifiers | HotkeyManager.MOD_NOREPEAT;
+                SettingsService.Save();
+            }
+            return ok;
+        }
+
+        public bool ChangeCorrectionHotkey(Keys key, uint modifiers)
+        {
+            bool ok = _hotkeyManager.RegisterCorrection(key, modifiers);
+            if (ok)
+            {
+                SettingsService.SetCorrectionHotkeyKey(key);
+                SettingsService.Current.CorrectionHotkeyModifiers = modifiers | HotkeyManager.MOD_NOREPEAT;
                 SettingsService.Save();
             }
             return ok;
@@ -142,6 +262,18 @@ namespace PersianKeyboardConverter
             if (picker.ShowDialog() == DialogResult.OK)
             {
                 bool ok = ChangeHotkey(picker.SelectedKey, picker.SelectedModifiers);
+                if (!ok)
+                    MessageBox.Show("Failed to register that hotkey — it may be in use by another application.",
+                        "Registration Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void ChangeCorrectionHotkeyInteractive()
+        {
+            using var picker = new HotkeyPickerForm(_hotkeyManager.CurrentCorrectionKey, _hotkeyManager.CurrentCorrectionModifiers);
+            if (picker.ShowDialog() == DialogResult.OK)
+            {
+                bool ok = ChangeCorrectionHotkey(picker.SelectedKey, picker.SelectedModifiers);
                 if (!ok)
                     MessageBox.Show("Failed to register that hotkey — it may be in use by another application.",
                         "Registration Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);

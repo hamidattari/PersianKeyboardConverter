@@ -20,6 +20,7 @@ namespace PersianKeyboardConverter
         private void LoadCurrentSettings()
         {
             UpdateHotkeyLabel();
+            UpdateCorrectionHotkeyLabel();
             checkBoxEnabled.Checked = SettingsService.Current.ConversionEnabled;
             checkBoxNotifications.Checked = SettingsService.Current.ShowNotifications;
             checkBoxAutostart.Checked = SettingsService.IsAutostartEnabled();
@@ -45,6 +46,29 @@ namespace PersianKeyboardConverter
                     MessageBox.Show("Failed to register that hotkey — it may be in use by another application.",
                         "Registration Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 UpdateHotkeyLabel();
+            }
+        }
+
+        private void UpdateCorrectionHotkeyLabel()
+        {
+            string mod = "";
+            uint m = SettingsService.Current.CorrectionHotkeyModifiers;
+            if ((m & HotkeyManager.MOD_CONTROL) != 0) mod += "Ctrl + ";
+            if ((m & HotkeyManager.MOD_ALT) != 0) mod += "Alt + ";
+            if ((m & HotkeyManager.MOD_SHIFT) != 0) mod += "Shift + ";
+            labelCorrectionHotkey.Text = $"{mod}{SettingsService.GetCorrectionHotkeyKey()}";
+        }
+
+        private void BtnChangeCorrectionHotkey_Click(object? sender, EventArgs e)
+        {
+            using var picker = new HotkeyPickerForm(SettingsService.GetCorrectionHotkeyKey(), SettingsService.Current.CorrectionHotkeyModifiers);
+            if (picker.ShowDialog(this) == DialogResult.OK)
+            {
+                bool ok = _trayContext.ChangeCorrectionHotkey(picker.SelectedKey, picker.SelectedModifiers);
+                if (!ok)
+                    MessageBox.Show("Failed to register that hotkey — it may be in use by another application.",
+                        "Registration Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                UpdateCorrectionHotkeyLabel();
             }
         }
 

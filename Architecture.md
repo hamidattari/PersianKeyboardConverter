@@ -39,6 +39,9 @@ The application follows a modular, layered architecture separating user interfac
 |            |             +---------v----------+           |           |
 |            |             |   KeyboardMapper   |           |           |
 |            |             +--------------------+           |           |
+|            |             +--------------------+           |           |
+|            |             |  SpellCheckService  |           |           |
+|            |             +---------+----------+           |           |
 +------------|----------------------------------------------|-----------+
              |                                              |
 +------------v----------------------------------------------v-----------+
@@ -80,6 +83,7 @@ The application follows a modular, layered architecture separating user interfac
 * **Technical Design:**
   * Uses P/Invoke to bind `user32.dll` APIs: `RegisterHotKey` and `UnregisterHotKey`.
   * Employs the **Hidden Message-Only Window Pattern** via an internal private class `HotkeyWindow : NativeWindow` to capture `WM_HOTKEY` (`0x0312`) OS messages without stealing UI focus.
+  * Manages **two** global hotkeys: the convert hotkey (default `F10`) and the correction hotkey (default `F9`), each with its own `WM_HOTKEY` id and event (`HotkeyPressed` / `CorrectionHotkeyPressed`).
   * Implements `IDisposable` to ensure global hotkeys are properly unregistered when the application exits or rebinds keys.
 
 #### `KeyboardMapper` (`Services/KeyboardMapper.cs`)
@@ -104,6 +108,7 @@ The application follows a modular, layered architecture separating user interfac
      * Processes conversion via `KeyboardMapper.Convert(...)`.
      * Places converted text into the clipboard and issues `Ctrl+V`.
      * Restores original clipboard content asynchronously via a dedicated background STA thread (`ApartmentState.STA`) with a safety delay.
+  * **Spell Correction (`CorrectFocusedWord`):** reads the selected text or the word around the caret (word boundaries across Persian/English scripts), checks it online, and replaces it with the best suggestion. Three-tier strategy: (1) pure UIA (TextPattern selection/caret + ValuePattern); (2) ValuePattern read + `Ctrl+C` probe + `ValuePattern.SetValue` write-back — for Chromium-style inputs without TextPattern, avoiding a keyboard paste that web-app chat inputs often intercept; (3) clipboard simulation. All tiers run on the background STA worker, so the UI thread is never blocked by the network lookup.
 
 #### `SettingsService` & `AppSettings` (`Services/SettingsService.cs`)
 * **Role:** Persistent configuration management.
@@ -113,6 +118,42 @@ The application follows a modular, layered architecture separating user interfac
 ---
 
 ## Key Technical Workflows
+
+### Workflow 2: Word Spell-Correction Flow (F9)
+
+```
+[ User presses Correction Hotkey (e.g. F9) ]
+                 |
+                 v
+[ OS sends WM_HOTKEY (id = 0xBEEF1) to HotkeyWindow ]
+                 |
+                 v
+[ HotkeyManager fires CorrectionHotkeyPressed ]
+                 |
+                 v
+[ TrayApplicationContext spawns background STA worker ]
+                 |
+                 v
+[ TextService.TryCorrectWordViaUia | CorrectWordViaClipboard (STA worker) ]
+     |                                |
+(Selection present?)            (No selection →
+     |                             word at caret)
+     v                                v
+[ Resolve word range (selected text | word around caret) ]
+                 |
+                 v
+[ SpellCheckService.CorrectText(word) → LanguageTool API (fa / en-US) ]
+                 |
+       (misspelled?)
+       /          \
+     Yes           No → [ "No correction found" ]
+      |
+      v
+[ Replace word with best suggestion, re-select it ]
+      |
+      v
+[ Balloon Tip: "word" → "corrected" (if enabled) ]
+```
 
 ### Workflow 1: Global Hotkey Trigger & Text Conversion Flow
 
@@ -149,6 +190,13 @@ The application follows a modular, layered architecture separating user interfac
           v
 [ Show Balloon Tip Notification (if enabled) ]
 ```
+
+---
+
+### `SpellCheckService` (`Services/SpellCheckService.cs`)
+* **Role:** Online spelling correction via the free LanguageTool public API (`https://api.languagetool.org/v2/check`, no API key).
+* **Behavior:** Picks the language from the dominant script (`fa` for Persian, `en-US` for English), returns the best-ranked suggestion for each issue, and applies all suggestions to multi-word selections (offsets are spliced last-to-first). Returns `null` when the text is correct or the API is unreachable.
+* **Limits:** Public endpoint is rate-limited to ~20 requests / 75 KB per IP per minute — ample for an on-demand hotkey.
 
 ---
 
