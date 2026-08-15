@@ -120,6 +120,7 @@ namespace PersianKeyboardConverter.Services
               { 'B', "\u0644\u0627" }, // لا
               // NOTE: در جهت معکوس، «لا» عمداً به B تبدیل نمی‌شود؛
               // چون تقریباً همیشه حاصل زدن g و h است (مثل «سلام» → "sghl").
+              // لیگاتور لا (U+FEFB) هم عمداً نگاشت معکوس ندارد و به همان شکل می‌ماند.
           };
 
         static KeyboardMapper()
@@ -164,6 +165,10 @@ namespace PersianKeyboardConverter.Services
                 }
                 else // PersianToEnglish
                 {
+                    // ZWNJ (نیم‌فاصله — کلید بک‌تیک در صفحه‌کلید استاندارد فارسی) در
+                    // خروجی انگلیسی حذف می‌شود تا متن تمیز بماند (مثل «می‌خواهم» → mykhahm)
+                    if (c == '\u200C') continue;
+
                     if (PeToEn.TryGetValue(c, out char english))
                         sb.Append(english);
                     else

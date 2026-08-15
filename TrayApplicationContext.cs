@@ -1,5 +1,6 @@
 using PersianKeyboardConverter.Forms;
 using PersianKeyboardConverter.Services;
+using System.Drawing.Drawing2D;
 
 namespace PersianKeyboardConverter
 {
@@ -14,7 +15,6 @@ namespace PersianKeyboardConverter
         private SettingsForm? _settingsForm;
 
         private ToolStripMenuItem _enabledItem = null!;
-        private ToolStripMenuItem _selectedTextItem = null!;
 
         public TrayApplicationContext()
         {
@@ -57,18 +57,6 @@ namespace PersianKeyboardConverter
                 SettingsService.Save();
             };
 
-            _selectedTextItem = new ToolStripMenuItem("Conversion: Just Selected Text")
-            {
-                Checked = SettingsService.Current.JustSelectedText,
-                CheckOnClick = true
-            };
-            _selectedTextItem.CheckedChanged += (_, _) =>
-            {
-                SettingsService.Current.JustSelectedText = _selectedTextItem.Checked;
-                _selectedTextItem.Text = _selectedTextItem.Checked ? "Conversion: Just Selected Text" : "Conversion: All";
-                SettingsService.Save();
-            };
-
             var exitItem = new ToolStripMenuItem("Exit Application", null, (_, _) => ExitApplication());
 
             menu.Items.AddRange(new ToolStripItem[]
@@ -77,7 +65,6 @@ namespace PersianKeyboardConverter
                 changeHotkeyItem,
                 new ToolStripSeparator(),
                 _enabledItem,
-                _selectedTextItem,
                 new ToolStripSeparator(),
                 exitItem
             });
@@ -97,9 +84,9 @@ namespace PersianKeyboardConverter
             string result;
             try
             {
-                var selectedText = SettingsService.Current.JustSelectedText;
-                //MessageBox.Show(selectedText.ToString());
-                result = TextService.ConvertFocusedText(selectedText);
+                // Converts the selected portion of the focused field when there is an
+                // active selection, otherwise the whole field content.
+                result = TextService.ConvertFocusedText();
             }
             catch (Exception ex)
             {
@@ -177,7 +164,7 @@ namespace PersianKeyboardConverter
                 string? iconPath = System.IO.Path.Combine(
                     AppDomain.CurrentDomain.BaseDirectory, "Resources", "app.ico");
                 if (System.IO.File.Exists(iconPath))
-                    return new Icon(iconPath);
+                    return new Icon(iconPath, 256, 256);
             }
             catch { }
 
@@ -187,14 +174,65 @@ namespace PersianKeyboardConverter
 
         private static Icon CreateFallbackIcon()
         {
-            using var bmp = new Bitmap(32, 32);
+            // Programmatic fallback that mirrors the compact 32px frame of Resources/app.ico:
+            // full-bleed indigo gradient, bold white keyboard deck, one amber highlight key.
+            const float s = 128f;
+            using var bmp = new Bitmap((int)s, (int)s);
             using var g = Graphics.FromImage(bmp);
-            g.Clear(Color.FromArgb(30, 80, 160));
-            using var font = new Font("Segoe UI", 9f, FontStyle.Bold);
-            g.DrawString("FA", font, Brushes.White, new PointF(2, 8));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+
+            // Full-bleed gradient background matching the app icon
+            using (var grad = new LinearGradientBrush(
+                new RectangleF(0, 0, s, s),
+                Color.FromArgb(99, 111, 238),
+                Color.FromArgb(29, 58, 170),
+                105f))
+            {
+                g.FillRectangle(grad, 0, 0, s, s);
+            }
+
+            // Keyboard deck (fills the tile — bold at tray size)
+            float m = MathF.Max(0.8f, s * 0.045f);
+            float deckX = m, deckW = s - 2 * m;
+            float deckY = s * 0.50f, deckH = s - deckY - m;
+            using (var body = new SolidBrush(Color.White))
+                FillRoundedRect(g, body, deckX, deckY, deckW, deckH, MathF.Min(deckH * 0.24f, 2.5f));
+
+            // Two rows of five thick keys; the highlighted key merges slots 2–3
+            float pad = deckH * 0.10f;
+            float gapX = deckW * 0.030f, gapY = deckH * 0.075f;
+            float keyW = (deckW - 2 * pad - 4 * gapX) / 5f;
+            float keyH = (deckH - 2 * pad - gapY) / 2f;
+            float y1 = deckY + pad, y2 = y1 + keyH + gapY;
+
+            using var key = new SolidBrush(Color.FromArgb(186, 197, 216));
+            for (int i = 0; i < 5; i++)
+            {
+                float x = deckX + pad + i * (keyW + gapX);
+                g.FillRectangle(key, x, y1, keyW, keyH);
+                if (i != 2) g.FillRectangle(key, x, y2, keyW, keyH);
+            }
+
+            using (var amber = new SolidBrush(Color.FromArgb(246, 158, 11)))
+                FillRoundedRect(g, amber, deckX + pad + 2 * (keyW + gapX), y2,
+                    2 * keyW + gapX, keyH, MathF.Min(keyH * 0.3f, 1.2f));
+
             IntPtr hIcon = bmp.GetHicon();
             var icon = Icon.FromHandle(hIcon);
             return icon;
+        }
+
+        private static void FillRoundedRect(Graphics g, Brush brush, float x, float y, float w, float h, float r)
+        {
+            using var path = new GraphicsPath();
+            float d = r * 2;
+            path.AddArc(x, y, d, d, 180, 90);
+            path.AddArc(x + w - d, y, d, d, 270, 90);
+            path.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+            path.AddArc(x, y + h - d, d, d, 90, 90);
+            path.CloseFigure();
+            g.FillPath(brush, path);
         }
 
         protected override void Dispose(bool disposing)

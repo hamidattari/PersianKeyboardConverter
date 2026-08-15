@@ -7,10 +7,13 @@ namespace PersianKeyboardConverter.Services
     /// <summary>
     /// Reads and replaces text in the currently focused UI control.
     ///
+    /// Behavior is automatic: if the focused field has an active text selection,
+    /// only that selection is converted; otherwise the whole field is converted.
+    ///
     /// Strategy (in priority order):
     ///   1. UI Automation ValuePattern — direct get/set on TextBox, &lt;input&gt;, &lt;textarea&gt;, etc.
-    ///      In "selected text only" mode the selection is read via TextPattern and only
-    ///      the selected substring is converted and replaced, keeping the rest untouched.
+    ///      The selection is detected via TextPattern, and only the selected substring
+    ///      is replaced when one is present.
     ///   2. UI Automation TextPattern  — read-only rich text (falls through to clipboard).
     ///   3. Clipboard simulation       — Ctrl+A → Ctrl+C → convert → Ctrl+V (universal fallback).
     /// </summary>
@@ -26,11 +29,12 @@ namespace PersianKeyboardConverter.Services
 
         /// <summary>
         /// Reads text from the focused element, converts it, and writes it back.
-        /// When <paramref name="selectedText"/> is true only the currently selected
-        /// portion is converted; otherwise the whole field content is converted.
+        /// If the field currently has a text selection, only that selection is
+        /// converted (and re-selected afterwards); otherwise the whole field
+        /// content is converted and the caret is restored to its mapped position.
         /// Returns a short human-readable status string.
         /// </summary>
-        public static string ConvertFocusedText(bool selectedText)
+        public static string ConvertFocusedText()
         {
             AutomationElement? focused = null;
             try
@@ -39,8 +43,11 @@ namespace PersianKeyboardConverter.Services
             }
             catch { /* UIA not available */ }
 
+            bool? hasSelection = null;
             if (focused != null)
             {
+                hasSelection = TryDetectSelection(focused);
+
                 // ── Strategy 1: ValuePattern (most text inputs) ───────────────────
                 if (focused.TryGetCurrentPattern(ValuePattern.Pattern, out object? patternObj)
                     && patternObj is ValuePattern valuePattern)
@@ -55,22 +62,52 @@ namespace PersianKeyboardConverter.Services
                             if (string.IsNullOrEmpty(original))
                                 return "Field is empty.";
 
-                            if (!selectedText)
+                            if (hasSelection == true)
                             {
-                                // Convert the whole field content
-                                string converted = KeyboardMapper.Convert(original);
-                                valuePattern.SetValue(converted);
-                                return $"Converted {original.Length} chars via UI Automation.";
-                            }
+                                // A selection exists → convert only the selected portion.
+                                if (TryConvertSelection(focused, original, out string? newValue, out int selLength))
+                                {
+                                    valuePattern.SetValue(newValue);
+                                    return $"Converted {selLength} selected chars via UI Automation.";
+                                }
 
-                            // Selected-text mode: convert ONLY the selected portion.
-                            // The selection is read through TextPattern and its character
-                            // offsets are resolved against the document, so only that
-                            // substring is replaced while the rest of the field stays put.
-                            if (TryConvertSelection(focused, original, out string? newValue, out int selLength))
+                                // The selection couldn't be resolved reliably — fall
+                                // through so the clipboard path handles it instead of
+                                // accidentally rewriting the whole field.
+                            }
+                            else
                             {
-                                valuePattern.SetValue(newValue);
-                                return $"Converted {selLength} selected chars via UI Automation.";
+                                // No selection, or selection state unknown (control without
+                                // TextPattern, e.g. masked password fields) → whole field.
+                                // Unknown state deliberately converts everything instead of
+                                // falling to the clipboard: masked fields can't be copied, so
+                                // the clipboard path would wrongly report "nothing to convert".
+                                var direction = KeyboardMapper.IsMostlyPersian(original)
+                                    ? KeyboardMapper.Direction.PersianToEnglish
+                                    : KeyboardMapper.Direction.EnglishToPersian;
+
+                                string converted = KeyboardMapper.Convert(original, direction);
+
+                                // Remember where the caret was: SetValue rewrites the whole
+                                // value and resets the caret to the start otherwise.
+                                int caretOrig = TryGetCaretOffset(focused);
+
+                                valuePattern.SetValue(converted);
+
+                                // Map the old caret offset through the same character-by-
+                                // character conversion so the caret lands on the same
+                                // logical position in the converted text.
+                                if (caretOrig >= 0
+                                    && focused.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj)
+                                    && tpObj is TextPattern textPattern)
+                                {
+                                    int prefixLen = Math.Min(caretOrig, original.Length);
+                                    int newCaret = Math.Clamp(
+                                        KeyboardMapper.Convert(original[..prefixLen], direction).Length,
+                                        0, converted.Length);
+                                    SelectRange(textPattern, newCaret, newCaret);
+                                }
+                                return $"Converted {original.Length} chars via UI Automation.";
                             }
                         }
                     }
@@ -79,9 +116,10 @@ namespace PersianKeyboardConverter.Services
             }
 
             // ── Strategy 3: Clipboard simulation (universal fallback) ─────────────
-            // Handles selection-based conversion for controls without ValuePattern
-            // (browsers, terminals, editors, etc.) via Ctrl+C → convert → Ctrl+V.
-            return ConvertViaClipboard(selectedText);
+            // Covers controls without ValuePattern (browsers, terminals, editors, …)
+            // via Ctrl+C → convert → Ctrl+V. The selection is detected through UIA
+            // when available, otherwise probed by copying without Ctrl+A first.
+            return ConvertViaClipboard(hasSelection);
         }
 
         // ─────────────────────────────────────────────────────────────────────────
@@ -89,11 +127,35 @@ namespace PersianKeyboardConverter.Services
         // ─────────────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Selected-text mode: converts only the highlighted portion of the field.
+        /// Determines whether the focused control currently has a non-empty text
+        /// selection. Returns null when it cannot be determined (the control does
+        /// not support TextPattern).
+        /// </summary>
+        private static bool? TryDetectSelection(AutomationElement? focused)
+        {
+            if (focused == null) return null;
+            try
+            {
+                if (!focused.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj) || tpObj is not TextPattern textPattern)
+                    return null;
+
+                TextPatternRange[] selections = textPattern.GetSelection();
+                if (selections.Length == 0)
+                    return false;
+
+                int start = GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.Start);
+                int end = GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.End);
+                return start < end;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Converts only the highlighted portion of the field.
         /// Returns true and sets <paramref name="newValue"/> when the selection was
         /// resolved and converted. Returns false when it cannot be resolved reliably
         /// (no TextPattern, no active selection, or offsets that don't match the
-        /// selection text) so the caller falls back to the clipboard path.
+        /// selection text) so the caller can fall back to the clipboard path.
         /// </summary>
         private static bool TryConvertSelection(AutomationElement element, string fullText, out string? newValue, out int convertedChars)
         {
@@ -121,14 +183,44 @@ namespace PersianKeyboardConverter.Services
             if (!string.Equals(selected, selections[0].GetText(-1), StringComparison.Ordinal))
                 return false;
 
-            string converted = KeyboardMapper.Convert(selected);
+            var direction = KeyboardMapper.IsMostlyPersian(selected)
+                ? KeyboardMapper.Direction.PersianToEnglish
+                : KeyboardMapper.Direction.EnglishToPersian;
+
+            string converted = KeyboardMapper.Convert(selected, direction);
             newValue = fullText[..start] + converted + fullText[end..];
 
-            // Best effort: keep the converted text selected so the user can see
-            // exactly which part changed.
-            SelectRange(textPattern, start, start + converted.Length);
+            // Re-select the converted text at its exact mapped position (conversion
+            // is character-by-character, so prefix lengths are exact) so the
+            // selection range is preserved after the rewrite.
+            int newStart = KeyboardMapper.Convert(fullText[..start], direction).Length;
+            SelectRange(textPattern, newStart, newStart + converted.Length);
             convertedChars = selected.Length;
             return true;
+        }
+
+        /// <summary>
+        /// Returns the caret's character offset in the field, or -1 when it can't
+        /// be read. A caret without a selection is reported by TextPattern as a
+        /// collapsed (degenerate) selection range.
+        /// </summary>
+        private static int TryGetCaretOffset(AutomationElement element)
+        {
+            try
+            {
+                if (element.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj) && tpObj is TextPattern textPattern)
+                {
+                    TextPatternRange[] selections = textPattern.GetSelection();
+                    if (selections.Length == 0)
+                        return -1;
+
+                    int start = GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.Start);
+                    int end = GetOffset(textPattern, selections[0], TextPatternRangeEndpoint.End);
+                    return start == end ? start : -1; // only a pure caret (no selection)
+                }
+            }
+            catch { }
+            return -1;
         }
 
         /// <summary>
@@ -169,7 +261,7 @@ namespace PersianKeyboardConverter.Services
         // Clipboard simulation
         // ─────────────────────────────────────────────────────────────────────────
 
-        private static string ConvertViaClipboard(bool selectedText)
+        private static string ConvertViaClipboard(bool? selectionState)
         {
             // 1. Preserve existing clipboard content
             string? savedText = null;
@@ -181,38 +273,31 @@ namespace PersianKeyboardConverter.Services
                 //    otherwise SendKeys "^c" becomes Ctrl+Alt+C etc.
                 ReleaseModifiers();
 
-                if (!selectedText)
+                // 3. Determine whether a selection exists. UIA usually already told us;
+                //    when it couldn't, probe by copying without Ctrl+A and checking
+                //    whether anything lands on the clipboard.
+                bool hasSelection = selectionState ?? ProbeSelection();
+
+                if (!hasSelection)
                 {
+                    // No selection → select the whole field first.
                     SendKeys.SendWait("^a");
                     Thread.Sleep(80);
                 }
 
-                // 3. CLEAR clipboard first so we can detect whether copy really happened
+                // 4. CLEAR clipboard first so we can detect whether copy really happened
                 try { Clipboard.Clear(); } catch { }
                 Thread.Sleep(50);
 
                 SendKeys.SendWait("^c");
 
-                // 4. Poll the clipboard instead of a single fixed sleep
-                string original = string.Empty;
-                for (int i = 0; i < 10; i++)          // up to ~500 ms
-                {
-                    Thread.Sleep(50);
-                    try
-                    {
-                        if (Clipboard.ContainsText())
-                        {
-                            original = Clipboard.GetText();
-                            if (!string.IsNullOrEmpty(original)) break;
-                        }
-                    }
-                    catch { /* clipboard busy, retry */ }
-                }
+                // 5. Poll the clipboard instead of a single fixed sleep
+                string original = PollClipboard();
 
                 if (string.IsNullOrEmpty(original))
                     return "Nothing to convert (empty or no selection).";
 
-                // 5. Convert and paste
+                // 6. Convert and paste
                 string converted = KeyboardMapper.Convert(original);
 
                 for (int i = 0; i < 5; i++)           // SetText can fail if clipboard is locked
@@ -233,7 +318,7 @@ namespace PersianKeyboardConverter.Services
             }
             finally
             {
-                // 6. Restore previous clipboard after the paste has been consumed
+                // 7. Restore previous clipboard after the paste has been consumed
                 if (savedText != null)
                 {
                     string text = savedText;
@@ -250,6 +335,55 @@ namespace PersianKeyboardConverter.Services
                     });
                 }
             }
+        }
+
+        /// <summary>
+        /// Tries to figure out whether the focused control has a selection by
+        /// copying without Ctrl+A and checking whether anything lands on the
+        /// clipboard. Used only when UIA couldn't determine the selection state.
+        /// Note: controls that expose UIA TextPattern (including modern consoles)
+        /// are detected before this is ever reached, so the plain Ctrl+C here
+        /// almost never fires against a legacy console window.
+        /// </summary>
+        private static bool ProbeSelection()
+        {
+            try { Clipboard.Clear(); } catch { }
+            Thread.Sleep(50);
+            SendKeys.SendWait("^c");
+
+            for (int i = 0; i < 6; i++)               // up to ~300 ms
+            {
+                Thread.Sleep(50);
+                try
+                {
+                    if (Clipboard.ContainsText() && !string.IsNullOrEmpty(Clipboard.GetText()))
+                        return true;
+                }
+                catch { /* clipboard busy, retry */ }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Polls the clipboard until text appears (up to ~500 ms).
+        /// Returns an empty string when nothing arrives.
+        /// </summary>
+        private static string PollClipboard()
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                Thread.Sleep(50);
+                try
+                {
+                    if (Clipboard.ContainsText())
+                    {
+                        string text = Clipboard.GetText();
+                        if (!string.IsNullOrEmpty(text)) return text;
+                    }
+                }
+                catch { /* clipboard busy, retry */ }
+            }
+            return string.Empty;
         }
 
         private static void ReleaseModifiers()

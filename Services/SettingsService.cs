@@ -11,7 +11,6 @@ namespace PersianKeyboardConverter.Services
         public string HotkeyKey { get; set; } = "F10";
         public uint HotkeyModifiers { get; set; } = HotkeyManager.MOD_NONE | HotkeyManager.MOD_NOREPEAT;
         public bool ConversionEnabled { get; set; } = true;
-        public bool JustSelectedText { get; set; } = true;
         public bool ShowNotifications { get; set; } = true;
         public bool StartWithWindows { get; set; } = false;
     }
