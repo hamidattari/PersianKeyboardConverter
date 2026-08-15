@@ -5,6 +5,9 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- WindowsBase (System.Windows.Rect from TextPatternRange.GetBoundingRectangles)
+         is part of the WPF framework surface; enable it without any WPF runtime use. -->
+    <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <AssemblyName>PersianKeyboardConverter</AssemblyName>
@@ -15,16 +18,13 @@
     <None Remove="Forms\HotkeyPickerForm.Designer.cs~RF2e6060ac.TMP" />
   </ItemGroup>
 
+  <!-- Scratch harness area (repro/). Keep it out of the default **/*.cs glob:
+       its own obj/ contains generated .cs files that would otherwise be
+       compiled into this assembly and duplicate its assembly attributes. -->
   <ItemGroup>
-    <!-- UIAutomationClient lives in Microsoft.WindowsDesktop.App; reference it directly -->
-    <Reference Include="UIAutomationClient">
-      <HintPath>$(MSBuildProgramFiles32)\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\8.0.20\ref\net8.0\UIAutomationClient.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="UIAutomationTypes">
-      <HintPath>$(MSBuildProgramFiles32)\dotnet\packs\Microsoft.WindowsDesktop.App.Ref\8.0.20\ref\net8.0\UIAutomationTypes.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
+    <Compile Remove="repro\**" />
+    <None Remove="repro\**" />
+    <EmbeddedResource Remove="repro\**" />
   </ItemGroup>
 
   <ItemGroup>

@@ -68,11 +68,12 @@ The application follows a modular, layered architecture separating user interfac
   * Provides balloon tip notifications upon completion.
   * Handles fallback icon creation programmatically using `System.Drawing.Bitmap` if an external `.ico` resource is missing.
 
-#### `SettingsForm` (`SettingsForm.cs`) & `HotkeyPickerForm` (`HotkeyPickerForm.cs`)
-* **Role:** Configuration user interface.
+#### `SettingsForm` (`SettingsForm.cs`), `HotkeyPickerForm` (`HotkeyPickerForm.cs`) & `SuggestionPickerForm` (`SuggestionPickerForm.cs`)
+* **Role:** Configuration and correction UI.
 * **Key Features:**
   * **Settings Window:** Form override on `OnFormClosing` intercepts `CloseReason.UserClosing` to hide the window to the tray rather than terminating the process.
   * **Interactive Hotkey Capture:** `HotkeyPickerForm` overrides `KeyDown` events to intercept raw key and modifier inputs (Ctrl, Alt, Shift), suppressing standard key press propagation.
+  * **Suggestion Picker:** borderless, always-on-top list shown near the caret with the top spelling suggestions. Up to **9 rows are visible at once** — longer lists scroll: the keyboard selection is kept in view (the viewport moves as you navigate past the visible window) and a native scrollbar signals there is more. Uses `WS_EX_NOACTIVATE` (never takes keyboard focus, so the target app keeps the word selected), a drop shadow, owner-drawn items with hover highlighting, and **temporary global hotkeys** registered only while the picker is visible — via its own message-only `NativeWindow` sink — since a non-activating window cannot receive keyboard input directly: **1–9** picks a row, **Esc** cancels, **Ctrl+↑/↓** moves a keyboard selection through the list (wrapping, drawn with an accent bar), and **Enter** applies the selected row (defaulting to the best suggestion). Because the window cannot take focus, Enter/Ctrl+↑↓ are global hotkeys while the picker is open: those keys are consumed system-wide for the picker's short visible lifetime (Esc dismisses instantly), so the user's target-app Enter (e.g. sending a chat message) defers to the picker until it closes. The picker is **per-monitor DPI aware**: the app runs under `PerMonitorV2`, and all pixel metrics are scaled to the DPI of the monitor containing the caret (`GetDpiForMonitor`) while fonts stay in points, so it renders crisply on a secondary monitor with different scaling. Placement clamps to the working area of the monitor that contains the caret (`Screen.FromPoint` — `SystemInformation.WorkingArea` only covers the primary monitor), prefers below-right, **flips above the caret** when there is no room below, and aligns its right edge near the caret when there is no room to the right.
 
 ---
 
@@ -108,7 +109,8 @@ The application follows a modular, layered architecture separating user interfac
      * Processes conversion via `KeyboardMapper.Convert(...)`.
      * Places converted text into the clipboard and issues `Ctrl+V`.
      * Restores original clipboard content asynchronously via a dedicated background STA thread (`ApartmentState.STA`) with a safety delay.
-  * **Spell Correction (`CorrectFocusedWord`):** reads the selected text or the word around the caret (word boundaries across Persian/English scripts), checks it online, and replaces it with the best suggestion. Three-tier strategy: (1) pure UIA (TextPattern selection/caret + ValuePattern); (2) ValuePattern read + `Ctrl+C` probe + `ValuePattern.SetValue` write-back — for Chromium-style inputs without TextPattern, avoiding a keyboard paste that web-app chat inputs often intercept; (3) clipboard simulation. All tiers run on the background STA worker, so the UI thread is never blocked by the network lookup.
+     * **Threading:** both the F10 conversion and the F9 correction run on isolated background STA workers, and every clipboard/keyboard sequence is serialized under a global `InputLock` — without it, an F9 worker's modifier-release events could land inside F10's `SendKeys` combo and drop the Ctrl (turning `Ctrl+C` into a stray "c" typed into the target field).
+  * **Spell Correction (`CaptureCorrectionProposal` + `ReplaceCorrection`):** reads the selected text or the word around the caret (word boundaries across Persian/English scripts), captures it together with the ranked suggestions from the spelling API, shows a small always-on-top picker near the caret (`SuggestionPickerForm`), and writes the user's chosen suggestion back. Three-tier capture strategy: (1) pure UIA (TextPattern selection/caret + ValuePattern); (2) ValuePattern read + `Ctrl+C` probe + `ValuePattern.SetValue` write-back — for Chromium-style inputs without TextPattern, avoiding a keyboard paste that web-app chat inputs often intercept; (3) clipboard simulation. The UIA-visible selection state is threaded down into the clipboard tier so it **never word-selects over an existing selection** (word-selecting would wipe the user's highlighted text — the rare "F9 selected my text again" bug); the clipboard probe also retries the copy before concluding there is no selection. All tiers run on the background STA worker, so the UI thread is never blocked by the network lookup.
 
 #### `SettingsService` & `AppSettings` (`Services/SettingsService.cs`)
 * **Role:** Persistent configuration management.
@@ -134,7 +136,7 @@ The application follows a modular, layered architecture separating user interfac
 [ TrayApplicationContext spawns background STA worker ]
                  |
                  v
-[ TextService.TryCorrectWordViaUia | CorrectWordViaClipboard (STA worker) ]
+[ TextService.CaptureCorrectionProposal (STA worker) ]
      |                                |
 (Selection present?)            (No selection →
      |                             word at caret)
@@ -142,17 +144,28 @@ The application follows a modular, layered architecture separating user interfac
 [ Resolve word range (selected text | word around caret) ]
                  |
                  v
-[ SpellCheckService.CorrectText(word) → LanguageTool API (fa / en-US) ]
+[ SpellCheckService.GetSuggestions(word) → LanguageTool API (fa / en-US) ]
                  |
-       (misspelled?)
+      (multi-word?)
        /          \
-     Yes           No → [ "No correction found" ]
-      |
-      v
-[ Replace word with best suggestion, re-select it ]
-      |
-      v
-[ Balloon Tip: "word" → "corrected" (if enabled) ]
+     Yes           No
+      |             |
+      v             v
+[ AutoApply the    [ Any suggestions? ]
+  combined fix ]       /           \
+                  Yes             No → [ Balloon: "No suggestions found" ]
+                   |
+                   v
+[ UI thread shows SuggestionPickerForm near the caret ]
+  (borderless, always-on-top, never steals focus)
+                   |
+    (click | 1-9 | Ctrl+↑↓ + Enter | Esc = cancel)
+                   |
+                   v
+[ TextService.ReplaceCorrection(proposal, chosen) → ValuePattern splice | clipboard paste ]
+                   |
+                   v
+[ Balloon Tip: "word" → "chosen" (if enabled) ]
 ```
 
 ### Workflow 1: Global Hotkey Trigger & Text Conversion Flow
@@ -174,11 +187,14 @@ The application follows a modular, layered architecture separating user interfac
            Yes        No --> [ Ignore ]
            /
           v
+[ TrayApplicationContext spawns background STA worker (guard: one run at a time) ]
+          |
+          v
 [ TextService.ConvertFocusedText() ]
           |
     +-----+-----------------------+
     |                             |
-(Try UI Automation ValuePattern)   (Fallback: Clipboard Simulation)
+(Try UI Automation ValuePattern)   (Fallback: Clipboard Simulation — under InputLock)
     |                             |
     | [Success]                   | 1. Backup Clipboard
     |                             | 2. Send Ctrl+A, Ctrl+C
@@ -195,7 +211,9 @@ The application follows a modular, layered architecture separating user interfac
 
 ### `SpellCheckService` (`Services/SpellCheckService.cs`)
 * **Role:** Online spelling correction via the free LanguageTool public API (`https://api.languagetool.org/v2/check`, no API key).
-* **Behavior:** Picks the language from the dominant script (`fa` for Persian, `en-US` for English), returns the best-ranked suggestion for each issue, and applies all suggestions to multi-word selections (offsets are spliced last-to-first). Returns `null` when the text is correct or the API is unreachable.
+* **Behavior:** Picks the language from the dominant script (`fa` for Persian, `en-US` for English). Exposes two entry points:
+  * `GetSuggestions(word)` — returns the **full ranked list** of replacements for the match that covers the word entirely (deduplicated, best first) for the suggestion picker.
+  * `CorrectText(text)` — applies the best-ranked suggestion for each issue, splicing multi-word offsets last-to-first; returns `null` when the text is correct or the API is unreachable.
 * **Limits:** Public endpoint is rate-limited to ~20 requests / 75 KB per IP per minute — ample for an on-demand hotkey.
 
 ---

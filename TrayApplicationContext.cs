@@ -119,6 +119,7 @@ namespace PersianKeyboardConverter
 
         private int _correctionInProgress;
         private long _correctionStartedAt;
+        private int _pickerOpen;
 
         private void OnCorrectionHotkeyPressed(object? sender, EventArgs e)
         {
@@ -133,6 +134,11 @@ namespace PersianKeyboardConverter
                 if (Environment.TickCount64 - Interlocked.Read(ref _correctionStartedAt) <= 30_000)
                     return; // already running
 
+                // Never clear the guard while the suggestion picker is on screen —
+                // it is alive by definition (its owner is waiting on it).
+                if (Volatile.Read(ref _pickerOpen) != 0)
+                    return;
+
                 Interlocked.Exchange(ref _correctionInProgress, 0); // clear stale run
                 if (Interlocked.CompareExchange(ref _correctionInProgress, 1, 0) != 0)
                     return; // lost the race to another press
@@ -144,35 +150,91 @@ namespace PersianKeyboardConverter
             // Small delay to ensure focus hasn't shifted away from the text field
             Thread.Sleep(50);
 
-            // The spelling lookup can take a couple of seconds, so run it on an
-            // isolated background STA thread (clipboard APIs need STA). Both the UIA
-            // path and the clipboard fallback run here — SendKeys and the clipboard
-            // work fine from this thread — so the UI thread (and the tray icon) is
-            // never blocked by the network lookup. Only the tray balloon is
-            // marshalled back to the UI thread.
+            // The spelling lookup can take a couple of seconds, so it runs on an
+            // isolated background STA thread (clipboard APIs need STA); the UI
+            // thread is never blocked by the network. The suggestion picker is
+            // shown on the UI thread (its message pump and temporary hotkeys live
+            // there); the worker waits for the user's choice and then performs the
+            // replacement — SendKeys and the clipboard work fine from this thread.
             var uiContext = SynchronizationContext.Current;
             var worker = new Thread(() =>
             {
                 try
                 {
-                    string result;
-                    try
+                    // 1. Capture the word + ranked suggestions (network lookup here).
+                    CorrectionProposal proposal = TextService.CaptureCorrectionProposal();
+
+                    string? result;
+                    if (proposal.AutoApply && proposal.Suggestions.Count == 1)
                     {
-                        result = TextService.CorrectFocusedWord();
+                        // Multi-word selection: apply the combined correction directly.
+                        result = TextService.ReplaceCorrection(proposal, proposal.Suggestions[0]);
                     }
-                    catch (Exception ex)
+                    else if (proposal.Suggestions.Count > 0)
                     {
-                        result = $"Error: {ex.Message}";
+                        // 2. Show the picker on the UI thread and wait for the choice.
+                        string? chosen = null;
+                        using var gate = new ManualResetEventSlim();
+
+                        Action show = () =>
+                        {
+                            try
+                            {
+                                Interlocked.Exchange(ref _pickerOpen, 1);
+                                var picker = new SuggestionPickerForm(proposal.Word, proposal.Suggestions, proposal.ScreenPoint);
+                                picker.FormClosed += (_, _) =>
+                                {
+                                    chosen = picker.ChosenSuggestion;
+                                    picker.Dispose();
+                                    Interlocked.Exchange(ref _pickerOpen, 0);
+                                    try { gate.Set(); } catch { /* worker already timed out */ }
+                                };
+                                picker.Show();
+                            }
+                            catch
+                            {
+                                Interlocked.Exchange(ref _pickerOpen, 0);
+                                try { gate.Set(); } catch { } // no picker → treated as cancel
+                            }
+                        };
+
+                        if (uiContext != null) uiContext.Post(_ => show(), null);
+                        else show();
+
+                        // Wait for the user's choice (the 30s watchdog above already
+                        // guards wedged runs, so a long think is fine).
+                        gate.Wait(TimeSpan.FromMinutes(5));
+
+                        if (chosen == null)
+                            return; // cancelled — no balloon, no change
+
+                        // 3. Write the chosen suggestion back.
+                        result = TextService.ReplaceCorrection(proposal, chosen);
+                    }
+                    else
+                    {
+                        result = proposal.Status;
                     }
 
                     string final = result;
-                    Action show = () =>
+                    Action notify = () =>
                     {
                         if (SettingsService.Current.ShowNotifications)
                             _trayIcon.ShowBalloonTip(3000, "Spell Correction", final, ToolTipIcon.Info);
                     };
-                    if (uiContext != null) uiContext.Post(_ => show(), null);
-                    else show();
+                    if (uiContext != null) uiContext.Post(_ => notify(), null);
+                    else notify();
+                }
+                catch (Exception ex)
+                {
+                    string msg = $"Error: {ex.Message}";
+                    Action notify = () =>
+                    {
+                        if (SettingsService.Current.ShowNotifications)
+                            _trayIcon.ShowBalloonTip(3000, "Spell Correction", msg, ToolTipIcon.Error);
+                    };
+                    if (uiContext != null) uiContext.Post(_ => notify(), null);
+                    else notify();
                 }
                 finally
                 {
