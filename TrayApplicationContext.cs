@@ -358,7 +358,14 @@ namespace PersianKeyboardConverter
                 string? iconPath = System.IO.Path.Combine(
                     AppDomain.CurrentDomain.BaseDirectory, "Resources", "app.ico");
                 if (System.IO.File.Exists(iconPath))
-                    return new Icon(iconPath, 256, 256);
+                {
+                    // Load at the notification area's actual size (16×16 at 100% DPI,
+                    // larger on a scaled taskbar) instead of forcing a 256×256 image
+                    // that Windows then downscales ~10:1 — which made the tray icon
+                    // render small and blurry next to icons with proper frames.
+                    return new Icon(iconPath,
+                        SystemInformation.SmallIconSize.Width, SystemInformation.SmallIconSize.Height);
+                }
             }
             catch { }
 
