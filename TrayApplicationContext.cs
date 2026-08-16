@@ -23,6 +23,7 @@ namespace PersianKeyboardConverter
             _hotkeyManager = new HotkeyManager();
             _hotkeyManager.HotkeyPressed += OnHotkeyPressed;
             _hotkeyManager.CorrectionHotkeyPressed += OnCorrectionHotkeyPressed;
+            _hotkeyManager.TranslationHotkeyPressed += OnTranslationHotkeyPressed;
 
             _trayIcon = new NotifyIcon
             {
@@ -51,6 +52,14 @@ namespace PersianKeyboardConverter
                 if (!okDefaultCorrection)
                     WarnAtStartup($"The correction hotkey ({SettingsService.GetCorrectionHotkeyKey()}) is in use by another application and the default (F9) is unavailable too — spell correction is disabled until you pick a free key in Settings.");
             }
+
+            bool okTranslation = _hotkeyManager.RegisterTranslation(SettingsService.GetTranslationHotkeyKey(), SettingsService.Current.TranslationHotkeyModifiers);
+            if (!okTranslation)
+            {
+                bool okDefaultTranslation = _hotkeyManager.RegisterTranslationDefault(); // fallback to F8
+                if (!okDefaultTranslation)
+                    WarnAtStartup($"The translation hotkey ({SettingsService.GetTranslationHotkeyKey()}) is in use by another application and the default (F8) is unavailable too — translation is disabled until you pick a free key in Settings.");
+            }
         }
 
         // ── Context menu ──────────────────────────────────────────────────
@@ -61,6 +70,7 @@ namespace PersianKeyboardConverter
             var openItem = new ToolStripMenuItem("Open Settings", null, (_, _) => ShowSettings());
             var changeHotkeyItem = new ToolStripMenuItem("Change Hotkey…", null, (_, _) => ChangeHotkeyInteractive());
             var changeCorrectionHotkeyItem = new ToolStripMenuItem("Change Correction Hotkey…", null, (_, _) => ChangeCorrectionHotkeyInteractive());
+            var changeTranslationHotkeyItem = new ToolStripMenuItem("Change Translation Hotkey…", null, (_, _) => ChangeTranslationHotkeyInteractive());
 
             _enabledItem = new ToolStripMenuItem("Conversion: Enabled")
             {
@@ -81,6 +91,7 @@ namespace PersianKeyboardConverter
                 openItem,
                 changeHotkeyItem,
                 changeCorrectionHotkeyItem,
+                changeTranslationHotkeyItem,
                 new ToolStripSeparator(),
                 _enabledItem,
                 new ToolStripSeparator(),
@@ -120,6 +131,8 @@ namespace PersianKeyboardConverter
         private int _correctionInProgress;
         private long _correctionStartedAt;
         private int _pickerOpen;
+        private int _translationInProgress;
+        private TranslationPopupForm? _translationPopup;
 
         private void OnCorrectionHotkeyPressed(object? sender, EventArgs e)
         {
@@ -249,6 +262,104 @@ namespace PersianKeyboardConverter
             worker.Start();
         }
 
+        private void OnTranslationHotkeyPressed(object? sender, EventArgs e)
+        {
+            // Re-entrancy guard: one translation lookup at a time. Unlike the
+            // correction flow there is no long-lived picker state, so a simple
+            // compare-exchange is enough — the flag is always released in finally.
+            if (Interlocked.CompareExchange(ref _translationInProgress, 1, 0) != 0)
+                return;
+
+            var uiContext = SynchronizationContext.Current;
+
+            void Notify(string message)
+            {
+                Action a = () =>
+                {
+                    if (SettingsService.Current.ShowNotifications)
+                        _trayIcon.ShowBalloonTip(3000, "Translation", message, ToolTipIcon.Info);
+                };
+                if (uiContext != null) uiContext.Post(_ => a(), null);
+                else a();
+            }
+
+            // The network lookup can take a second or two, so it runs on an
+            // isolated background STA thread (clipboard APIs need STA); the popup
+            // is shown on the UI thread.
+            var worker = new Thread(() =>
+            {
+                try
+                {
+                    // Small delay to ensure focus hasn't shifted away from the text field
+                    Thread.Sleep(50);
+
+                    SelectionCapture capture = TextService.CaptureSelection();
+                    string original = capture.Text.Trim();
+                    if (original.Length == 0)
+                    {
+                        Notify("No text selected.");
+                        return;
+                    }
+
+                    bool fromPersian = KeyboardMapper.IsMostlyPersian(original); // fast + synchronous
+
+                    // Show the popup immediately with a "Translating…" placeholder so
+                    // long selections don't feel stuck; the result is filled in below.
+                    Action show = () =>
+                    {
+                        try
+                        {
+                            _translationPopup?.Close(); // replace any existing popup
+                            _translationPopup = new TranslationPopupForm(original, fromPersian, capture.ScreenPoint);
+                            _translationPopup.FormClosed += (_, _) =>
+                            {
+                                var p = _translationPopup;
+                                _translationPopup = null;
+                                p?.Dispose();
+                            };
+                            _translationPopup.Show();
+                        }
+                        catch { /* popup could not be shown */ }
+                    };
+                    if (uiContext != null) uiContext.Post(_ => show(), null);
+                    else show();
+
+                    // Translate on the worker (network); the UI thread is never blocked.
+                    TranslationResult? result = TranslationService.Translate(original);
+
+                    Action update = () =>
+                    {
+                        if (_translationPopup == null || _translationPopup.IsDisposed) return;
+                        if (result == null) _translationPopup.SetError("Translation failed (offline or API error).");
+                        else _translationPopup.SetTranslation(result.Text);
+                    };
+                    if (uiContext != null) uiContext.Post(_ => update(), null);
+                    else update();
+                }
+                catch (Exception ex)
+                {
+                    // If the popup is already on screen, surface the error there so
+                    // it never hangs on "Translating…"; otherwise fall back to a balloon.
+                    Action fail = () =>
+                    {
+                        if (_translationPopup != null && !_translationPopup.IsDisposed)
+                            _translationPopup.SetError($"Error: {ex.Message}");
+                        else if (SettingsService.Current.ShowNotifications)
+                            _trayIcon.ShowBalloonTip(3000, "Translation", $"Error: {ex.Message}", ToolTipIcon.Error);
+                    };
+                    if (uiContext != null) uiContext.Post(_ => fail(), null);
+                    else fail();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _translationInProgress, 0);
+                }
+            })
+            { IsBackground = true };
+            worker.SetApartmentState(ApartmentState.STA);
+            worker.Start();
+        }
+
         /// <summary>
         /// Shows a warning balloon shortly after startup (deferred so the tray icon
         /// is ready) when a global hotkey could not be registered.
@@ -290,6 +401,18 @@ namespace PersianKeyboardConverter
             {
                 SettingsService.SetCorrectionHotkeyKey(key);
                 SettingsService.Current.CorrectionHotkeyModifiers = modifiers | HotkeyManager.MOD_NOREPEAT;
+                SettingsService.Save();
+            }
+            return ok;
+        }
+
+        public bool ChangeTranslationHotkey(Keys key, uint modifiers)
+        {
+            bool ok = _hotkeyManager.RegisterTranslation(key, modifiers);
+            if (ok)
+            {
+                SettingsService.SetTranslationHotkeyKey(key);
+                SettingsService.Current.TranslationHotkeyModifiers = modifiers | HotkeyManager.MOD_NOREPEAT;
                 SettingsService.Save();
             }
             return ok;
@@ -342,9 +465,22 @@ namespace PersianKeyboardConverter
             }
         }
 
+        private void ChangeTranslationHotkeyInteractive()
+        {
+            using var picker = new HotkeyPickerForm(_hotkeyManager.CurrentTranslationKey, _hotkeyManager.CurrentTranslationModifiers);
+            if (picker.ShowDialog() == DialogResult.OK)
+            {
+                bool ok = ChangeTranslationHotkey(picker.SelectedKey, picker.SelectedModifiers);
+                if (!ok)
+                    MessageBox.Show("Failed to register that hotkey — it may be in use by another application.",
+                        "Registration Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
         private void ExitApplication()
         {
             _trayIcon.Visible = false;
+            _translationPopup?.Dispose();
             _hotkeyManager.Dispose();
             _settingsForm?.Dispose();
             Application.Exit();
@@ -442,6 +578,7 @@ namespace PersianKeyboardConverter
             {
                 _trayIcon.Visible = false;
                 _trayIcon.Dispose();
+                _translationPopup?.Dispose();
                 _hotkeyManager.Dispose();
             }
             base.Dispose(disposing);

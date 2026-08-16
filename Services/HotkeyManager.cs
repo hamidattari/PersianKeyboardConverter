@@ -5,9 +5,10 @@ using System.Windows.Forms;
 namespace PersianKeyboardConverter.Services
 {
     /// <summary>
-    /// Registers and manages two system-wide global hotkeys using the Win32 RegisterHotKey API:
-    ///   • Convert hotkey    (default F10) → fires <see cref="HotkeyPressed"/>
-    ///   • Correction hotkey (default F9)  → fires <see cref="CorrectionHotkeyPressed"/>
+    /// Registers and manages three system-wide global hotkeys using the Win32 RegisterHotKey API:
+    ///   • Convert hotkey     (default F10) → fires <see cref="HotkeyPressed"/>
+    ///   • Correction hotkey  (default F9)  → fires <see cref="CorrectionHotkeyPressed"/>
+    ///   • Translation hotkey (default F8)  → fires <see cref="TranslationHotkeyPressed"/>
     /// Fires its events when the hotkeys are triggered from any window.
     /// </summary>
     public sealed class HotkeyManager : IDisposable
@@ -23,6 +24,7 @@ namespace PersianKeyboardConverter.Services
         private const int WM_HOTKEY = 0x0312;
         private const int HOTKEY_ID_CONVERT = 0xBEEF;   // Arbitrary unique IDs for this app
         private const int HOTKEY_ID_CORRECT = 0xBEEF1;
+        private const int HOTKEY_ID_TRANSLATE = 0xBEEF2;
 
         // Modifier flags
         public const uint MOD_NONE = 0x0000;
@@ -37,6 +39,7 @@ namespace PersianKeyboardConverter.Services
         private readonly HotkeyWindow _window;
         private bool _registered;
         private bool _correctionRegistered;
+        private bool _translationRegistered;
         private bool _disposed;
 
         /// <summary>Raised on the UI thread when the convert hotkey is pressed.</summary>
@@ -45,16 +48,22 @@ namespace PersianKeyboardConverter.Services
         /// <summary>Raised on the UI thread when the correction hotkey is pressed.</summary>
         public event EventHandler? CorrectionHotkeyPressed;
 
+        /// <summary>Raised on the UI thread when the translation hotkey is pressed.</summary>
+        public event EventHandler? TranslationHotkeyPressed;
+
         public Keys CurrentKey { get; private set; } = Keys.F10;
         public uint CurrentModifiers { get; private set; } = MOD_NONE | MOD_NOREPEAT;
         public Keys CurrentCorrectionKey { get; private set; } = Keys.F9;
         public uint CurrentCorrectionModifiers { get; private set; } = MOD_NONE | MOD_NOREPEAT;
+        public Keys CurrentTranslationKey { get; private set; } = Keys.F8;
+        public uint CurrentTranslationModifiers { get; private set; } = MOD_NONE | MOD_NOREPEAT;
 
         public HotkeyManager()
         {
             _window = new HotkeyWindow();
             _window.HotkeyTriggered += OnHotkeyTriggered;
             _window.CorrectionHotkeyTriggered += OnCorrectionHotkeyTriggered;
+            _window.TranslationHotkeyTriggered += OnTranslationHotkeyTriggered;
         }
 
         // ── Convert hotkey ─────────────────────────────────────────────────
@@ -117,9 +126,41 @@ namespace PersianKeyboardConverter.Services
             }
         }
 
+        // ── Translation hotkey ─────────────────────────────────────────────
+
+        /// <summary>
+        /// Registers (or re-registers) the translation hotkey. Call this after
+        /// changing key/modifiers. Returns true on success; false if registration
+        /// failed (another app may own the key).
+        /// </summary>
+        public bool RegisterTranslation(Keys key, uint modifiers)
+        {
+            UnregisterTranslation();
+            CurrentTranslationKey = key;
+            CurrentTranslationModifiers = modifiers | MOD_NOREPEAT;
+
+            _translationRegistered = RegisterHotKey(_window.Handle, HOTKEY_ID_TRANSLATE, CurrentTranslationModifiers, (uint)key);
+            return _translationRegistered;
+        }
+
+        /// <summary>Registers the default translation hotkey (F8, no modifiers).</summary>
+        public bool RegisterTranslationDefault() => RegisterTranslation(Keys.F8, MOD_NONE);
+
+        /// <summary>Unregisters the translation hotkey if registered.</summary>
+        public void UnregisterTranslation()
+        {
+            if (_translationRegistered)
+            {
+                UnregisterHotKey(_window.Handle, HOTKEY_ID_TRANSLATE);
+                _translationRegistered = false;
+            }
+        }
+
         private void OnHotkeyTriggered(object? sender, EventArgs e) => HotkeyPressed?.Invoke(this, e);
 
         private void OnCorrectionHotkeyTriggered(object? sender, EventArgs e) => CorrectionHotkeyPressed?.Invoke(this, e);
+
+        private void OnTranslationHotkeyTriggered(object? sender, EventArgs e) => TranslationHotkeyPressed?.Invoke(this, e);
 
         public void Dispose()
         {
@@ -127,6 +168,7 @@ namespace PersianKeyboardConverter.Services
             {
                 Unregister();
                 UnregisterCorrection();
+                UnregisterTranslation();
                 _window.Dispose();
                 _disposed = true;
             }
@@ -137,6 +179,7 @@ namespace PersianKeyboardConverter.Services
         {
             public event EventHandler? HotkeyTriggered;
             public event EventHandler? CorrectionHotkeyTriggered;
+            public event EventHandler? TranslationHotkeyTriggered;
 
             public HotkeyWindow()
             {
@@ -152,6 +195,8 @@ namespace PersianKeyboardConverter.Services
                         HotkeyTriggered?.Invoke(this, EventArgs.Empty);
                     else if (id == HOTKEY_ID_CORRECT)
                         CorrectionHotkeyTriggered?.Invoke(this, EventArgs.Empty);
+                    else if (id == HOTKEY_ID_TRANSLATE)
+                        TranslationHotkeyTriggered?.Invoke(this, EventArgs.Empty);
                     else
                         base.WndProc(ref m);
                 }

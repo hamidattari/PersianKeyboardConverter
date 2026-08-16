@@ -143,6 +143,88 @@ namespace PersianKeyboardConverter.Services
         }
 
         /// <summary>
+        /// Captures the user's active text selection together with a screen point
+        /// near it, for the translation popup. Unlike conversion/spell-check this
+        /// never selects anything the user hasn't highlighted: when there is no
+        /// selection the returned <see cref="SelectionCapture.Text"/> is empty.
+        /// Uses UI Automation when possible, otherwise a clipboard Ctrl+C probe.
+        /// Must run on an STA thread (clipboard APIs).
+        /// </summary>
+        public static SelectionCapture CaptureSelection()
+        {
+            AutomationElement? focused = null;
+            try
+            {
+                focused = AutomationElement.FocusedElement;
+            }
+            catch { /* UIA not available */ }
+
+            if (focused != null)
+            {
+                string? viaUia = TryReadSelectionViaUia(focused);
+                if (viaUia != null)
+                    return new SelectionCapture { Text = viaUia, ScreenPoint = GetCaretScreenPoint(focused) };
+            }
+
+            // Clipboard fallback: Ctrl+C only (no Ctrl+A — translation must never
+            // read the whole field when nothing is selected).
+            lock (InputLock)
+            {
+                string? savedText = null;
+                try { if (Clipboard.ContainsText()) savedText = Clipboard.GetText(); } catch { }
+
+                try
+                {
+                    ReleaseModifiers();
+                    string? copied = CopySelection(maxAttempts: 2);
+                    return new SelectionCapture { Text = copied ?? string.Empty, ScreenPoint = GetCursorScreenPoint() };
+                }
+                finally
+                {
+                    RestoreClipboardNow(savedText); // give the user's clipboard back
+                }
+            }
+        }
+
+        /// <summary>
+        /// Reads the active selection of <paramref name="focused"/> via UI Automation,
+        /// or null when there is no selection / it can't be read.
+        /// </summary>
+        private static string? TryReadSelectionViaUia(AutomationElement focused)
+        {
+            try
+            {
+                // TextPattern reports the selection text directly — the most
+                // reliable source when the control exposes it.
+                if (focused.TryGetCurrentPattern(TextPattern.Pattern, out object? tpObj) && tpObj is TextPattern textPattern)
+                {
+                    TextPatternRange[] selections = textPattern.GetSelection();
+                    if (selections.Length > 0)
+                    {
+                        string text = selections[0].GetText(-1);
+                        if (!string.IsNullOrEmpty(text)) return text;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                // ValuePattern fallback: resolve the selection bounds against the
+                // full field value.
+                if (focused.TryGetCurrentPattern(ValuePattern.Pattern, out object? vpObj) && vpObj is ValuePattern valuePattern)
+                {
+                    string full = valuePattern.Current.Value ?? string.Empty;
+                    if (TryGetSelectionBounds(focused, full, out int start, out int end))
+                        return full.Substring(start, end - start);
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        /// <summary>
         /// Captures the word to correct (the active selection, or the word under
         /// the caret) together with the ranked candidate corrections from the
         /// spelling API and everything needed to write the chosen one back into

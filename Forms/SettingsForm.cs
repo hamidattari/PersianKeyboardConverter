@@ -21,6 +21,7 @@ namespace PersianKeyboardConverter
         {
             UpdateHotkeyLabel();
             UpdateCorrectionHotkeyLabel();
+            UpdateTranslationHotkeyLabel();
             checkBoxEnabled.Checked = SettingsService.Current.ConversionEnabled;
             checkBoxNotifications.Checked = SettingsService.Current.ShowNotifications;
             checkBoxAutostart.Checked = SettingsService.IsAutostartEnabled();
@@ -69,6 +70,29 @@ namespace PersianKeyboardConverter
                     MessageBox.Show("Failed to register that hotkey — it may be in use by another application.",
                         "Registration Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 UpdateCorrectionHotkeyLabel();
+            }
+        }
+
+        private void UpdateTranslationHotkeyLabel()
+        {
+            string mod = "";
+            uint m = SettingsService.Current.TranslationHotkeyModifiers;
+            if ((m & HotkeyManager.MOD_CONTROL) != 0) mod += "Ctrl + ";
+            if ((m & HotkeyManager.MOD_ALT) != 0) mod += "Alt + ";
+            if ((m & HotkeyManager.MOD_SHIFT) != 0) mod += "Shift + ";
+            labelTranslationHotkey.Text = $"{mod}{SettingsService.GetTranslationHotkeyKey()}";
+        }
+
+        private void BtnChangeTranslationHotkey_Click(object? sender, EventArgs e)
+        {
+            using var picker = new HotkeyPickerForm(SettingsService.GetTranslationHotkeyKey(), SettingsService.Current.TranslationHotkeyModifiers);
+            if (picker.ShowDialog(this) == DialogResult.OK)
+            {
+                bool ok = _trayContext.ChangeTranslationHotkey(picker.SelectedKey, picker.SelectedModifiers);
+                if (!ok)
+                    MessageBox.Show("Failed to register that hotkey — it may be in use by another application.",
+                        "Registration Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                UpdateTranslationHotkeyLabel();
             }
         }
 

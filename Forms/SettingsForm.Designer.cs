@@ -35,6 +35,9 @@
             groupBoxCorrectionHotkey = new GroupBox();
             labelCorrectionHotkey = new Label();
             buttonChangeCorrectionHotkey = new Button();
+            groupBoxTranslationHotkey = new GroupBox();
+            labelTranslationHotkey = new Label();
+            buttonChangeTranslationHotkey = new Button();
             groupBoxOptions = new GroupBox();
             checkBoxEnabled = new CheckBox();
             checkBoxNotifications = new CheckBox();
@@ -43,6 +46,7 @@
             labelStatus = new Label();
             groupBoxHotkey.SuspendLayout();
             groupBoxCorrectionHotkey.SuspendLayout();
+            groupBoxTranslationHotkey.SuspendLayout();
             groupBoxOptions.SuspendLayout();
             SuspendLayout();
             // 
@@ -108,15 +112,46 @@
             buttonChangeCorrectionHotkey.UseVisualStyleBackColor = true;
             buttonChangeCorrectionHotkey.Click += BtnChangeCorrectionHotkey_Click;
             // 
+            // groupBoxTranslationHotkey
+            // 
+            groupBoxTranslationHotkey.Controls.Add(labelTranslationHotkey);
+            groupBoxTranslationHotkey.Controls.Add(buttonChangeTranslationHotkey);
+            groupBoxTranslationHotkey.Location = new Point(12, 166);
+            groupBoxTranslationHotkey.Name = "groupBoxTranslationHotkey";
+            groupBoxTranslationHotkey.Size = new Size(385, 72);
+            groupBoxTranslationHotkey.TabIndex = 2;
+            groupBoxTranslationHotkey.TabStop = false;
+            groupBoxTranslationHotkey.Text = "Translation Hotkey (F8: translate selected text)";
+            // 
+            // labelTranslationHotkey
+            // 
+            labelTranslationHotkey.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
+            labelTranslationHotkey.ForeColor = Color.DarkSlateBlue;
+            labelTranslationHotkey.Location = new Point(12, 26);
+            labelTranslationHotkey.Name = "labelTranslationHotkey";
+            labelTranslationHotkey.Size = new Size(260, 24);
+            labelTranslationHotkey.TabIndex = 0;
+            labelTranslationHotkey.TextAlign = ContentAlignment.MiddleLeft;
+            // 
+            // buttonChangeTranslationHotkey
+            // 
+            buttonChangeTranslationHotkey.Location = new Point(280, 24);
+            buttonChangeTranslationHotkey.Name = "buttonChangeTranslationHotkey";
+            buttonChangeTranslationHotkey.Size = new Size(90, 28);
+            buttonChangeTranslationHotkey.TabIndex = 1;
+            buttonChangeTranslationHotkey.Text = "Change…";
+            buttonChangeTranslationHotkey.UseVisualStyleBackColor = true;
+            buttonChangeTranslationHotkey.Click += BtnChangeTranslationHotkey_Click;
+            // 
             // groupBoxOptions
             // 
             groupBoxOptions.Controls.Add(checkBoxEnabled);
             groupBoxOptions.Controls.Add(checkBoxNotifications);
             groupBoxOptions.Controls.Add(checkBoxAutostart);
-            groupBoxOptions.Location = new Point(12, 166);
+            groupBoxOptions.Location = new Point(12, 244);
             groupBoxOptions.Name = "groupBoxOptions";
             groupBoxOptions.Size = new Size(385, 120);
-            groupBoxOptions.TabIndex = 2;
+            groupBoxOptions.TabIndex = 3;
             groupBoxOptions.TabStop = false;
             groupBoxOptions.Text = "Options";
             // 
@@ -153,10 +188,10 @@
             // 
             // buttonSave
             // 
-            buttonSave.Location = new Point(12, 292);
+            buttonSave.Location = new Point(12, 370);
             buttonSave.Name = "buttonSave";
             buttonSave.Size = new Size(120, 32);
-            buttonSave.TabIndex = 3;
+            buttonSave.TabIndex = 4;
             buttonSave.Text = "Save Settings";
             buttonSave.UseVisualStyleBackColor = true;
             buttonSave.Click += buttonSave_Click;
@@ -164,16 +199,17 @@
             // labelStatus
             // 
             labelStatus.ForeColor = Color.ForestGreen;
-            labelStatus.Location = new Point(148, 298);
+            labelStatus.Location = new Point(148, 376);
             labelStatus.Name = "labelStatus";
             labelStatus.Size = new Size(250, 20);
-            labelStatus.TabIndex = 4;
+            labelStatus.TabIndex = 5;
             // 
             // SettingsForm
             // 
-            ClientSize = new Size(402, 336);
+            ClientSize = new Size(402, 414);
             Controls.Add(groupBoxHotkey);
             Controls.Add(groupBoxCorrectionHotkey);
+            Controls.Add(groupBoxTranslationHotkey);
             Controls.Add(groupBoxOptions);
             Controls.Add(buttonSave);
             Controls.Add(labelStatus);
@@ -186,6 +222,7 @@
             Text = "Persian Keyboard Converter — Settings";
             groupBoxHotkey.ResumeLayout(false);
             groupBoxCorrectionHotkey.ResumeLayout(false);
+            groupBoxTranslationHotkey.ResumeLayout(false);
             groupBoxOptions.ResumeLayout(false);
             ResumeLayout(false);
         }
@@ -199,6 +236,10 @@
         private System.Windows.Forms.GroupBox groupBoxCorrectionHotkey = null!;
         private System.Windows.Forms.Label labelCorrectionHotkey = null!;
         private System.Windows.Forms.Button buttonChangeCorrectionHotkey = null!;
+
+        private System.Windows.Forms.GroupBox groupBoxTranslationHotkey = null!;
+        private System.Windows.Forms.Label labelTranslationHotkey = null!;
+        private System.Windows.Forms.Button buttonChangeTranslationHotkey = null!;
 
         private System.Windows.Forms.GroupBox groupBoxOptions = null!;
         private System.Windows.Forms.CheckBox checkBoxEnabled = null!;
