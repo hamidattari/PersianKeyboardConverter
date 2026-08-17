@@ -160,62 +160,71 @@ namespace PersianKeyboardConverter
             long runStart = Environment.TickCount64;
             Interlocked.Exchange(ref _correctionStartedAt, runStart);
 
-            // Small delay to ensure focus hasn't shifted away from the text field
-            Thread.Sleep(50);
+            // The hotkey window lives on the UI message loop, so this handler runs on
+            // the UI thread: show the picker synchronously in its "Loading…" state
+            // before the word is captured or the spelling API is called.
+            string? chosen = null;
+            SuggestionPickerForm? picker = null;
+            var gate = new ManualResetEventSlim();
+            try
+            {
+                Interlocked.Exchange(ref _pickerOpen, 1);
+                picker = new SuggestionPickerForm(TextService.GetCursorScreenPoint());
+                picker.FormClosed += (_, _) =>
+                {
+                    chosen = picker.ChosenSuggestion;
+                    picker.Dispose();
+                    Interlocked.Exchange(ref _pickerOpen, 0);
+                    try { gate.Set(); } catch { /* worker already finished */ }
+                };
+                picker.Show();
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _pickerOpen, 0);
+                try { gate.Set(); } catch { } // no picker → treated as cancel
+            }
 
-            // The spelling lookup can take a couple of seconds, so it runs on an
-            // isolated background STA thread (clipboard APIs need STA); the UI
-            // thread is never blocked by the network. The suggestion picker is
-            // shown on the UI thread (its message pump and temporary hotkeys live
-            // there); the worker waits for the user's choice and then performs the
-            // replacement — SendKeys and the clipboard work fine from this thread.
             var uiContext = SynchronizationContext.Current;
+
+            void Post(Action uiAction)
+            {
+                if (uiContext != null) uiContext.Post(_ => uiAction(), null);
+                else uiAction();
+            }
+
+            // The capture + spelling lookup runs on an isolated background STA thread
+            // (clipboard APIs need STA); the picker (already visible) is populated once
+            // the lookup returns, then the worker waits for the user's choice and
+            // performs the replacement — SendKeys and the clipboard work fine here.
             var worker = new Thread(() =>
             {
                 try
                 {
+                    // Small delay to ensure focus hasn't shifted away from the text field
+                    Thread.Sleep(50);
+
                     // 1. Capture the word + ranked suggestions (network lookup here).
                     CorrectionProposal proposal = TextService.CaptureCorrectionProposal();
 
                     string? result;
                     if (proposal.AutoApply && proposal.Suggestions.Count == 1)
                     {
-                        // Multi-word selection: apply the combined correction directly.
+                        // Multi-word selection: no list UI needed. Close the loading
+                        // picker and apply the combined correction directly.
+                        Post(() => picker?.Close());
+                        gate.Wait(TimeSpan.FromSeconds(2)); // ensure the picker closed + _pickerOpen reset
                         result = TextService.ReplaceCorrection(proposal, proposal.Suggestions[0]);
                     }
                     else if (proposal.Suggestions.Count > 0)
                     {
-                        // 2. Show the picker on the UI thread and wait for the choice.
-                        string? chosen = null;
-                        using var gate = new ManualResetEventSlim();
-
-                        Action show = () =>
+                        // 2. Populate the already-visible picker and wait for the choice.
+                        Post(() =>
                         {
-                            try
-                            {
-                                Interlocked.Exchange(ref _pickerOpen, 1);
-                                var picker = new SuggestionPickerForm(proposal.Word, proposal.Suggestions, proposal.ScreenPoint);
-                                picker.FormClosed += (_, _) =>
-                                {
-                                    chosen = picker.ChosenSuggestion;
-                                    picker.Dispose();
-                                    Interlocked.Exchange(ref _pickerOpen, 0);
-                                    try { gate.Set(); } catch { /* worker already timed out */ }
-                                };
-                                picker.Show();
-                            }
-                            catch
-                            {
-                                Interlocked.Exchange(ref _pickerOpen, 0);
-                                try { gate.Set(); } catch { } // no picker → treated as cancel
-                            }
-                        };
+                            if (picker != null && !picker.IsDisposed)
+                                picker.SetCorrections(proposal.Word, proposal.Suggestions);
+                        });
 
-                        if (uiContext != null) uiContext.Post(_ => show(), null);
-                        else show();
-
-                        // Wait for the user's choice (the 30s watchdog above already
-                        // guards wedged runs, so a long think is fine).
                         gate.Wait(TimeSpan.FromMinutes(5));
 
                         if (chosen == null)
@@ -226,6 +235,9 @@ namespace PersianKeyboardConverter
                     }
                     else
                     {
+                        // No suggestions: close the loading picker and report status.
+                        Post(() => picker?.Close());
+                        gate.Wait(TimeSpan.FromSeconds(2)); // ensure the picker closed + _pickerOpen reset
                         result = proposal.Status;
                     }
 
@@ -240,6 +252,11 @@ namespace PersianKeyboardConverter
                 }
                 catch (Exception ex)
                 {
+                    // The picker may still be on screen in its "Loading…" state —
+                    // close it before reporting the failure.
+                    Post(() => picker?.Close());
+                    gate.Wait(TimeSpan.FromSeconds(2)); // ensure the picker closed + _pickerOpen reset
+
                     string msg = $"Error: {ex.Message}";
                     Action notify = () =>
                     {
@@ -255,6 +272,8 @@ namespace PersianKeyboardConverter
                     // stale (previously hung) worker can't clear the flag of a newer run.
                     if (Interlocked.Read(ref _correctionStartedAt) == runStart)
                         Interlocked.Exchange(ref _correctionInProgress, 0);
+
+                    gate.Dispose();
                 }
             })
             { IsBackground = true };
@@ -270,22 +289,30 @@ namespace PersianKeyboardConverter
             if (Interlocked.CompareExchange(ref _translationInProgress, 1, 0) != 0)
                 return;
 
+            // The hotkey window lives on the UI message loop, so this handler runs on
+            // the UI thread: show the popup synchronously in its "Translating…" state
+            // before the selection is even captured, so feedback is instant.
+            _translationPopup?.Close(); // replace any existing popup
+            var popup = new TranslationPopupForm(TextService.GetCursorScreenPoint());
+            _translationPopup = popup;
+            popup.FormClosed += (_, _) =>
+            {
+                if (_translationPopup == popup) _translationPopup = null;
+                popup.Dispose();
+            };
+            popup.Show();
+
             var uiContext = SynchronizationContext.Current;
 
-            void Notify(string message)
+            void Post(Action uiAction)
             {
-                Action a = () =>
-                {
-                    if (SettingsService.Current.ShowNotifications)
-                        _trayIcon.ShowBalloonTip(3000, "Translation", message, ToolTipIcon.Info);
-                };
-                if (uiContext != null) uiContext.Post(_ => a(), null);
-                else a();
+                if (uiContext != null) uiContext.Post(_ => uiAction(), null);
+                else uiAction();
             }
 
-            // The network lookup can take a second or two, so it runs on an
-            // isolated background STA thread (clipboard APIs need STA); the popup
-            // is shown on the UI thread.
+            // The network + clipboard work runs on an isolated background STA thread
+            // (clipboard APIs need STA); the already-visible popup is filled in as
+            // each piece arrives. The UI thread is never blocked.
             var worker = new Thread(() =>
             {
                 try
@@ -297,58 +324,37 @@ namespace PersianKeyboardConverter
                     string original = capture.Text.Trim();
                     if (original.Length == 0)
                     {
-                        Notify("No text selected.");
+                        Post(() => { if (!popup.IsDisposed) popup.SetError("No text selected."); });
                         return;
                     }
 
                     bool fromPersian = KeyboardMapper.IsMostlyPersian(original); // fast + synchronous
 
-                    // Show the popup immediately with a "Translating…" placeholder so
-                    // long selections don't feel stuck; the result is filled in below.
-                    Action show = () =>
+                    // Fill in the source text + direction while the lookup continues.
+                    Post(() =>
                     {
-                        try
-                        {
-                            _translationPopup?.Close(); // replace any existing popup
-                            _translationPopup = new TranslationPopupForm(original, fromPersian, capture.ScreenPoint);
-                            _translationPopup.FormClosed += (_, _) =>
-                            {
-                                var p = _translationPopup;
-                                _translationPopup = null;
-                                p?.Dispose();
-                            };
-                            _translationPopup.Show();
-                        }
-                        catch { /* popup could not be shown */ }
-                    };
-                    if (uiContext != null) uiContext.Post(_ => show(), null);
-                    else show();
+                        if (!popup.IsDisposed) popup.SetOriginal(original, fromPersian, capture.ScreenPoint);
+                    });
 
-                    // Translate on the worker (network); the UI thread is never blocked.
                     TranslationResult? result = TranslationService.Translate(original);
 
-                    Action update = () =>
+                    Post(() =>
                     {
-                        if (_translationPopup == null || _translationPopup.IsDisposed) return;
-                        if (result == null) _translationPopup.SetError("Translation failed (offline or API error).");
-                        else _translationPopup.SetTranslation(result.Text);
-                    };
-                    if (uiContext != null) uiContext.Post(_ => update(), null);
-                    else update();
+                        if (popup.IsDisposed) return;
+                        if (result == null) popup.SetError("Translation failed (offline or API error).");
+                        else popup.SetTranslation(result.Text);
+                    });
                 }
                 catch (Exception ex)
                 {
-                    // If the popup is already on screen, surface the error there so
-                    // it never hangs on "Translating…"; otherwise fall back to a balloon.
-                    Action fail = () =>
+                    // If the popup is still on screen, surface the error there so it
+                    // never hangs on "Translating…"; otherwise fall back to a balloon.
+                    Post(() =>
                     {
-                        if (_translationPopup != null && !_translationPopup.IsDisposed)
-                            _translationPopup.SetError($"Error: {ex.Message}");
+                        if (!popup.IsDisposed) popup.SetError($"Error: {ex.Message}");
                         else if (SettingsService.Current.ShowNotifications)
                             _trayIcon.ShowBalloonTip(3000, "Translation", $"Error: {ex.Message}", ToolTipIcon.Error);
-                    };
-                    if (uiContext != null) uiContext.Post(_ => fail(), null);
-                    else fail();
+                    });
                 }
                 finally
                 {

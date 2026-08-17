@@ -65,19 +65,28 @@ namespace PersianKeyboardConverter.Forms
         private readonly HotkeySink _sink;
         private readonly List<int> _registeredIds = new();
         private readonly float _scale;
-        private readonly string _original;
-        private readonly Point _screenPoint;
+        private string _original;
+        private Point _screenPoint;
+        private readonly Label _titleLabel;
         private readonly TextBox _originalBox;
         private readonly TextBox _translatedBox;
         private readonly Label _hintLabel;
         private readonly Button _copyButton;
         private readonly Button _copyOriginalButton;
 
+        private readonly ProgressBar _loadingBar;
+
         private string? _translated;
 
-        public TranslationPopupForm(string original, bool sourceWasPersian, Point screenPoint)
+        /// <summary>
+        /// Creates the popup in its initial "Translating…" state, positioned at
+        /// <paramref name="screenPoint"/> (the mouse cursor at hotkey time). The
+        /// source text and direction are filled in later via
+        /// <see cref="SetOriginal"/> once selection capture completes.
+        /// </summary>
+        public TranslationPopupForm(Point screenPoint)
         {
-            _original = original;
+            _original = "";
             _screenPoint = screenPoint;
             _scale = GetMonitorScale(screenPoint);
 
@@ -102,13 +111,22 @@ namespace PersianKeyboardConverter.Forms
                 BackColor = Color.FromArgb(40, 40, 58)
             };
 
-            var title = new Label
+            _titleLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                Text = sourceWasPersian ? "ترجمه · fa → en" : "Translation · en → fa",
+                Text = "Translating…",
                 ForeColor = Color.FromArgb(205, 205, 220),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(pad, 0, 0, 0)
+            };
+
+            // Thin marquee strip under the title while the lookup is in flight.
+            _loadingBar = new ProgressBar
+            {
+                Dock = DockStyle.Bottom,
+                Height = Scale(4),
+                Style = ProgressBarStyle.Marquee,
+                MarqueeAnimationSpeed = 30
             };
 
             var closeButton = MakeButton("✕", headerH);
@@ -119,7 +137,8 @@ namespace PersianKeyboardConverter.Forms
             closeButton.FlatAppearance.MouseDownBackColor = Color.FromArgb(150, 60, 70);
             closeButton.Click += (_, _) => Close();
 
-            header.Controls.Add(title);
+            header.Controls.Add(_titleLabel);
+            header.Controls.Add(_loadingBar);
             header.Controls.Add(closeButton);
 
             // ── Footer ─────────────────────────────────────────────────────
@@ -161,11 +180,11 @@ namespace PersianKeyboardConverter.Forms
             };
 
             var originalCaption = MakeCaption("Original", captionH);
-            _originalBox = MakeTextBox(original, sourceWasPersian, Scale(24), scroll: false, DockStyle.Top);
+            _originalBox = MakeTextBox("", false, Scale(24), scroll: false, DockStyle.Top);
 
             var translatedCaption = MakeCaption("Translation", captionH);
             translatedCaption.Margin = new Padding(0, Scale(GapD), 0, 0); // visual gap above the translation
-            _translatedBox = MakeTextBox("", !sourceWasPersian, Scale(24), scroll: false, DockStyle.Fill);
+            _translatedBox = MakeTextBox("", false, Scale(24), scroll: false, DockStyle.Fill);
 
             // Same-edge (Top) controls dock in reverse add order: the last added is
             // topmost. Add the Fill box first, then the Top controls bottom-to-top.
@@ -187,10 +206,26 @@ namespace PersianKeyboardConverter.Forms
             FormClosed += (_, _) => UnregisterPopupHotkeys();
         }
 
+        /// <summary>
+        /// Fills in the source text once selection capture completes, switches the
+        /// header to the resolved direction, and re-sizes/repositions the popup.
+        /// Called after the popup was shown in its "Translating…" state.
+        /// </summary>
+        public void SetOriginal(string original, bool sourceWasPersian, Point screenPoint)
+        {
+            _original = original;
+            _screenPoint = screenPoint;
+            _titleLabel.Text = sourceWasPersian ? "ترجمه · fa → en" : "Translation · en → fa";
+            _originalBox.RightToLeft = sourceWasPersian ? RightToLeft.Yes : RightToLeft.No;
+            _translatedBox.RightToLeft = sourceWasPersian ? RightToLeft.No : RightToLeft.Yes;
+            ApplyLayout(_translated ?? "Translating…");
+        }
+
         /// <summary>Fills in the translation, grows the box to fit, and enables Copy.</summary>
         public void SetTranslation(string translated)
         {
             _translated = translated;
+            _loadingBar.Visible = false;
             ApplyLayout(translated);
             _copyButton.Enabled = true;
             UpdateHint();
@@ -200,6 +235,7 @@ namespace PersianKeyboardConverter.Forms
         public void SetError(string message)
         {
             _translated = null;
+            _loadingBar.Visible = false;
             ApplyLayout(message);
             _copyButton.Enabled = false;
             _hintLabel.Text = "Esc close";

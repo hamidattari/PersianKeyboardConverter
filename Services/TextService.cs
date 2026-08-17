@@ -159,7 +159,13 @@ namespace PersianKeyboardConverter.Services
             }
             catch { /* UIA not available */ }
 
-            if (focused != null)
+            // UIA selection reads are only trustworthy for genuine editable text
+            // fields (a non-read-only ValuePattern: text box, input, text area).
+            // For read-only / rich content — rendered markdown, web pages, webviews —
+            // Chromium and other providers often report the whole text node instead
+            // of just the highlighted range, so go straight to the clipboard Ctrl+C
+            // probe, which browsers handle correctly.
+            if (focused != null && IsEditableTextControl(focused))
             {
                 string? viaUia = TryReadSelectionViaUia(focused);
                 if (viaUia != null)
@@ -184,6 +190,27 @@ namespace PersianKeyboardConverter.Services
                     RestoreClipboardNow(savedText); // give the user's clipboard back
                 }
             }
+        }
+
+        /// <summary>
+        /// Returns true when <paramref name="element"/> is a genuine editable text
+        /// control (exposes a non-read-only ValuePattern — a text box, input, or
+        /// text area). UI Automation selection reads are trustworthy here; for
+        /// read-only / rich content they are not, so callers fall back to the
+        /// clipboard probe.
+        /// </summary>
+        private static bool IsEditableTextControl(AutomationElement element)
+        {
+            try
+            {
+                if (!element.TryGetCurrentPattern(ValuePattern.Pattern, out object? patternObj)
+                    || patternObj is not ValuePattern)
+                    return false;
+
+                bool readOnly = (bool)(element.GetCurrentPropertyValue(ValuePatternIdentifiers.IsReadOnlyProperty) ?? true);
+                return !readOnly;
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -625,7 +652,11 @@ namespace PersianKeyboardConverter.Services
             return GetCursorScreenPoint();
         }
 
-        private static Point GetCursorScreenPoint()
+        /// <summary>
+        /// Returns the current mouse cursor position in screen coordinates. Exposed
+        /// so callers can position a popup before selection capture has finished.
+        /// </summary>
+        public static Point GetCursorScreenPoint()
         {
             GetCursorPos(out POINT pt);
             return new Point(pt.X, pt.Y);

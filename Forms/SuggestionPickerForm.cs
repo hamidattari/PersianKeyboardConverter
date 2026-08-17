@@ -50,11 +50,15 @@ namespace PersianKeyboardConverter.Forms
             public int Y;
         }
 
-        private readonly IReadOnlyList<string> _suggestions;
+        private IReadOnlyList<string> _suggestions = Array.Empty<string>();
         private readonly ListBox _list;
+        private readonly Label _headerLabel;
+        private readonly Label _footerLabel;
         private readonly HotkeySink _sink;
         private readonly List<int> _registeredIds = new();
+        private readonly ProgressBar _loadingBar;
         private readonly float _scale;
+        private Point _screenPoint;
         private int _hoverIndex = -1;
         private int _selectedIndex; // keyboard selection (Ctrl+Up/Down), defaults to the best suggestion
         private string? _chosen;
@@ -62,9 +66,9 @@ namespace PersianKeyboardConverter.Forms
         /// <summary>The chosen suggestion, or null when the user cancelled.</summary>
         public string? ChosenSuggestion => _chosen;
 
-        public SuggestionPickerForm(string word, IReadOnlyList<string> suggestions, Point screenPoint)
+        public SuggestionPickerForm(Point screenPoint)
         {
-            _suggestions = suggestions;
+            _screenPoint = screenPoint;
             _scale = GetMonitorScale(screenPoint);
 
             FormBorderStyle = FormBorderStyle.None;
@@ -81,24 +85,24 @@ namespace PersianKeyboardConverter.Forms
             int headerH = Scale(34);
             int footerH = Scale(22);
 
-            // Header: the original word
-            var header = new Label
+            // Header: shows "Loading…" until SetCorrections fills in the word.
+            _headerLabel = new Label
             {
                 Dock = DockStyle.Top,
                 Height = headerH,
-                Text = $"Corrections for «{word}»",
+                Text = "Loading…",
                 ForeColor = Color.FromArgb(205, 205, 220),
                 BackColor = Color.FromArgb(40, 40, 58),
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(pad, 0, 0, 0)
             };
 
-            // Footer hint
-            var footer = new Label
+            // Footer hint (minimal while loading; filled in by SetCorrections)
+            _footerLabel = new Label
             {
                 Dock = DockStyle.Bottom,
                 Height = footerH,
-                Text = "Esc cancel · 1-9 pick · Ctrl+↑↓ + Enter",
+                Text = "Esc cancel",
                 ForeColor = Color.FromArgb(130, 130, 150),
                 BackColor = Color.FromArgb(30, 30, 46),
                 TextAlign = ContentAlignment.MiddleLeft,
@@ -117,35 +121,72 @@ namespace PersianKeyboardConverter.Forms
                 IntegralHeight = false,
                 Font = Font
             };
-            foreach (string s in _suggestions)
-                _list.Items.Add(s);
             _list.DrawItem += OnDrawItem;
             _list.MouseMove += OnListMouseMove;
             _list.MouseClick += OnListMouseClick;
             _list.MouseLeave += (_, _) => { _hoverIndex = -1; _list.Invalidate(); };
 
-            Controls.Add(_list);
-            Controls.Add(header);
-            Controls.Add(footer);
-
-            // Size to the widest suggestion, capped. Measure with a pixel-unit font
-            // at the target monitor's DPI so the width matches what will be drawn.
-            // Width is measured against ALL suggestions: the list can scroll, so a
-            // long row past the visible window must not be truncated by the cap.
-            int itemCount = Math.Min(_suggestions.Count, MaxVisibleRows); // visible rows; more scroll
-            using (var measureFont = new Font(Font.FontFamily, Font.Size * _scale, GraphicsUnit.Pixel))
+            // Thin marquee strip under the header while the lookup is in flight.
+            _loadingBar = new ProgressBar
             {
-                int widest = Math.Max(TextRenderer.MeasureText(word, measureFont).Width,
-                    _suggestions.DefaultIfEmpty("").Max(s => TextRenderer.MeasureText(s, measureFont).Width));
-                int width = Math.Clamp(Scale(widest + 130), Scale(300), Scale(440));
-                ClientSize = new Size(width, headerH + footerH + itemCount * _list.ItemHeight + Scale(2));
-            }
+                Dock = DockStyle.Top,
+                Height = Scale(4),
+                Style = ProgressBarStyle.Marquee,
+                MarqueeAnimationSpeed = 30
+            };
+
+            Controls.Add(_list);
+            Controls.Add(_loadingBar);
+            Controls.Add(_headerLabel);
+            Controls.Add(_footerLabel);
+
+            // Initial "Loading…" size: a single empty row so the window has a body.
+            ClientSize = new Size(Scale(300), headerH + footerH + Scale(30) + Scale(2));
 
             PositionAt(screenPoint);
 
             _sink = new HotkeySink(this);
-            RegisterPickerHotkeys(itemCount);
+            RegisterPickerHotkeys(0); // only Esc/Enter/Ctrl+↑↓ until suggestions arrive
             FormClosed += (_, _) => UnregisterPickerHotkeys();
+        }
+
+        /// <summary>
+        /// Fills the picker with the corrections once the spelling lookup returns
+        /// (it was shown in a "Loading…" state). Re-sizes, repositions, and
+        /// re-registers the 1..N hotkeys for the newly known suggestion list.
+        /// </summary>
+        public void SetCorrections(string word, IReadOnlyList<string> suggestions)
+        {
+            _loadingBar.Visible = false;
+
+            _suggestions = suggestions;
+
+            _headerLabel.Text = $"Corrections for «{word}»";
+            _footerLabel.Text = "Esc cancel · 1-9 pick · Ctrl+↑↓ + Enter";
+
+            _list.BeginUpdate();
+            _list.Items.Clear();
+            foreach (string s in suggestions)
+                _list.Items.Add(s);
+            _list.EndUpdate();
+
+            _selectedIndex = suggestions.Count > 0 ? 0 : -1;
+            _hoverIndex = -1;
+
+            int itemCount = Math.Min(suggestions.Count, MaxVisibleRows); // visible rows; more scroll
+            using (var measureFont = new Font(Font.FontFamily, Font.Size * _scale, GraphicsUnit.Pixel))
+            {
+                int widest = Math.Max(TextRenderer.MeasureText(word, measureFont).Width,
+                    suggestions.DefaultIfEmpty("").Max(s => TextRenderer.MeasureText(s, measureFont).Width));
+                int width = Math.Clamp(Scale(widest + 130), Scale(300), Scale(440));
+                ClientSize = new Size(width, _headerLabel.Height + _footerLabel.Height + itemCount * _list.ItemHeight + Scale(2));
+            }
+            PositionAt(_screenPoint);
+
+            // Re-register with the new suggestion count so 1..N works.
+            UnregisterPickerHotkeys();
+            RegisterPickerHotkeys(suggestions.Count);
+            _list.Invalidate();
         }
 
         /// <summary>Scales a 96-DPI design-unit value to the target monitor's DPI.</summary>
