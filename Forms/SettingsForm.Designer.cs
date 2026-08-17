@@ -215,7 +215,6 @@
             Controls.Add(labelStatus);
             Font = new Font("Segoe UI", 9F);
             FormBorderStyle = FormBorderStyle.FixedToolWindow;
-            Icon = (Icon)resources.GetObject("$this.Icon");
             MaximizeBox = false;
             Name = "SettingsForm";
             StartPosition = FormStartPosition.CenterScreen;

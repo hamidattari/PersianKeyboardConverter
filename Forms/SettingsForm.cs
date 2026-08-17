@@ -14,6 +14,13 @@ namespace PersianKeyboardConverter
         {
             _trayContext = context;
             InitializeComponent();
+
+            // The taskbar button uses this window's icon; when unset, WinForms
+            // falls back to the generic app icon instead of the exe's icon. Load
+            // app.ico at the taskbar's large-icon size so the running and pinned
+            // icons match.
+            Icon = TrayApplicationContext.LoadAppIcon(SystemInformation.IconSize);
+
             LoadCurrentSettings();
         }
 

@@ -28,7 +28,7 @@ namespace PersianKeyboardConverter
             _trayIcon = new NotifyIcon
             {
                 Text = "Persian Keyboard Converter",
-                Icon = LoadIcon(),
+                Icon = LoadAppIcon(SystemInformation.SmallIconSize),
                 Visible = true,
                 ContextMenuStrip = BuildContextMenu()
             };
@@ -486,21 +486,22 @@ namespace PersianKeyboardConverter
             Application.Exit();
         }
 
-        private static Icon LoadIcon()
+        /// <summary>
+        /// Loads the app icon at the requested pixel size so Windows can use an
+        /// exact frame from the multi-resolution app.ico (the tray uses the small
+        /// icon size, windows use the large icon size) instead of downscaling one
+        /// oversized frame.
+        /// </summary>
+        public static Icon LoadAppIcon(Size size)
         {
-            // Try to load the embedded icon; fall back to a system icon
+            // Try to load the shipped icon; fall back to a drawn keyboard icon.
             try
             {
                 string? iconPath = System.IO.Path.Combine(
                     AppDomain.CurrentDomain.BaseDirectory, "Resources", "app.ico");
                 if (System.IO.File.Exists(iconPath))
                 {
-                    // Load at the notification area's actual size (16×16 at 100% DPI,
-                    // larger on a scaled taskbar) instead of forcing a 256×256 image
-                    // that Windows then downscales ~10:1 — which made the tray icon
-                    // render small and blurry next to icons with proper frames.
-                    return new Icon(iconPath,
-                        SystemInformation.SmallIconSize.Width, SystemInformation.SmallIconSize.Height);
+                    return new Icon(iconPath, size.Width, size.Height);
                 }
             }
             catch { }
