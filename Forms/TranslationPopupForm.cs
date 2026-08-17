@@ -75,6 +75,7 @@ namespace PersianKeyboardConverter.Forms
         private readonly Button _copyOriginalButton;
 
         private readonly ProgressBar _loadingBar;
+        private readonly PopupWheelScroll _wheelScroll;
 
         private string? _translated;
 
@@ -202,6 +203,7 @@ namespace PersianKeyboardConverter.Forms
             ApplyLayout("Translating…");
 
             _sink = new HotkeySink(this);
+            _wheelScroll = new PopupWheelScroll(this);
             RegisterPopupHotkeys();
             FormClosed += (_, _) => UnregisterPopupHotkeys();
         }
@@ -449,6 +451,7 @@ namespace PersianKeyboardConverter.Forms
             if (disposing)
             {
                 UnregisterPopupHotkeys();
+                _wheelScroll?.Dispose();
                 _sink?.DestroyHandle();
             }
             base.Dispose(disposing);

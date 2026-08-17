@@ -57,6 +57,7 @@ namespace PersianKeyboardConverter.Forms
         private readonly HotkeySink _sink;
         private readonly List<int> _registeredIds = new();
         private readonly ProgressBar _loadingBar;
+        private readonly PopupWheelScroll _wheelScroll;
         private readonly float _scale;
         private Point _screenPoint;
         private int _hoverIndex = -1;
@@ -146,6 +147,7 @@ namespace PersianKeyboardConverter.Forms
             PositionAt(screenPoint);
 
             _sink = new HotkeySink(this);
+            _wheelScroll = new PopupWheelScroll(this);
             RegisterPickerHotkeys(0); // only Esc/Enter/Ctrl+↑↓ until suggestions arrive
             FormClosed += (_, _) => UnregisterPickerHotkeys();
         }
@@ -412,6 +414,7 @@ namespace PersianKeyboardConverter.Forms
             if (disposing)
             {
                 UnregisterPickerHotkeys();
+                _wheelScroll?.Dispose();
                 _sink?.DestroyHandle();
             }
             base.Dispose(disposing);
