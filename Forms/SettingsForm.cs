@@ -31,6 +31,7 @@ namespace PersianKeyboardConverter
             UpdateTranslationHotkeyLabel();
             checkBoxEnabled.Checked = SettingsService.Current.ConversionEnabled;
             checkBoxNotifications.Checked = SettingsService.Current.ShowNotifications;
+            checkBoxSwitchLayout.Checked = SettingsService.Current.SwitchLayoutOnConvert;
             checkBoxAutostart.Checked = SettingsService.IsAutostartEnabled();
         }
 
@@ -107,6 +108,7 @@ namespace PersianKeyboardConverter
         {
             SettingsService.Current.ConversionEnabled = checkBoxEnabled.Checked;
             SettingsService.Current.ShowNotifications = checkBoxNotifications.Checked;
+            SettingsService.Current.SwitchLayoutOnConvert = checkBoxSwitchLayout.Checked;
             SettingsService.Current.StartWithWindows = checkBoxAutostart.Checked;
             SettingsService.Save();
             _trayContext.UpdateConversionState(checkBoxEnabled.Checked);

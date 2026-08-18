@@ -41,6 +41,7 @@
             groupBoxOptions = new GroupBox();
             checkBoxEnabled = new CheckBox();
             checkBoxNotifications = new CheckBox();
+            checkBoxSwitchLayout = new CheckBox();
             checkBoxAutostart = new CheckBox();
             buttonSave = new Button();
             labelStatus = new Label();
@@ -147,10 +148,11 @@
             // 
             groupBoxOptions.Controls.Add(checkBoxEnabled);
             groupBoxOptions.Controls.Add(checkBoxNotifications);
+            groupBoxOptions.Controls.Add(checkBoxSwitchLayout);
             groupBoxOptions.Controls.Add(checkBoxAutostart);
             groupBoxOptions.Location = new Point(12, 244);
             groupBoxOptions.Name = "groupBoxOptions";
-            groupBoxOptions.Size = new Size(385, 120);
+            groupBoxOptions.Size = new Size(385, 148);
             groupBoxOptions.TabIndex = 3;
             groupBoxOptions.TabStop = false;
             groupBoxOptions.Text = "Options";
@@ -177,18 +179,29 @@
             checkBoxNotifications.Text = "Show tray notifications on convert";
             checkBoxNotifications.UseVisualStyleBackColor = true;
             // 
+            // checkBoxSwitchLayout
+            // 
+            checkBoxSwitchLayout.Checked = true;
+            checkBoxSwitchLayout.CheckState = CheckState.Checked;
+            checkBoxSwitchLayout.Location = new Point(12, 80);
+            checkBoxSwitchLayout.Name = "checkBoxSwitchLayout";
+            checkBoxSwitchLayout.Size = new Size(340, 22);
+            checkBoxSwitchLayout.TabIndex = 2;
+            checkBoxSwitchLayout.Text = "Switch keyboard layout to match converted text";
+            checkBoxSwitchLayout.UseVisualStyleBackColor = true;
+            // 
             // checkBoxAutostart
             // 
-            checkBoxAutostart.Location = new Point(12, 80);
+            checkBoxAutostart.Location = new Point(12, 108);
             checkBoxAutostart.Name = "checkBoxAutostart";
             checkBoxAutostart.Size = new Size(340, 22);
-            checkBoxAutostart.TabIndex = 2;
+            checkBoxAutostart.TabIndex = 3;
             checkBoxAutostart.Text = "Start with Windows";
             checkBoxAutostart.UseVisualStyleBackColor = true;
             // 
             // buttonSave
             // 
-            buttonSave.Location = new Point(12, 370);
+            buttonSave.Location = new Point(12, 398);
             buttonSave.Name = "buttonSave";
             buttonSave.Size = new Size(120, 32);
             buttonSave.TabIndex = 4;
@@ -199,14 +212,14 @@
             // labelStatus
             // 
             labelStatus.ForeColor = Color.ForestGreen;
-            labelStatus.Location = new Point(148, 376);
+            labelStatus.Location = new Point(148, 404);
             labelStatus.Name = "labelStatus";
             labelStatus.Size = new Size(250, 20);
             labelStatus.TabIndex = 5;
             // 
             // SettingsForm
             // 
-            ClientSize = new Size(402, 414);
+            ClientSize = new Size(402, 442);
             Controls.Add(groupBoxHotkey);
             Controls.Add(groupBoxCorrectionHotkey);
             Controls.Add(groupBoxTranslationHotkey);
@@ -243,6 +256,7 @@
         private System.Windows.Forms.GroupBox groupBoxOptions = null!;
         private System.Windows.Forms.CheckBox checkBoxEnabled = null!;
         private System.Windows.Forms.CheckBox checkBoxNotifications = null!;
+        private System.Windows.Forms.CheckBox checkBoxSwitchLayout = null!;
         private System.Windows.Forms.CheckBox checkBoxAutostart = null!;
 
         private System.Windows.Forms.Button buttonSave = null!;

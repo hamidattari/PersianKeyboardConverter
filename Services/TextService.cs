@@ -54,8 +54,10 @@ namespace PersianKeyboardConverter.Services
         /// content is converted and the caret is restored to its mapped position.
         /// Returns a short human-readable status string.
         /// </summary>
-        public static string ConvertFocusedText()
+        public static string ConvertFocusedText(out KeyboardMapper.Direction direction)
         {
+            direction = KeyboardMapper.Direction.Auto;
+
             AutomationElement? focused = null;
             try
             {
@@ -85,7 +87,7 @@ namespace PersianKeyboardConverter.Services
                             if (hasSelection == true)
                             {
                                 // A selection exists → convert only the selected portion.
-                                if (TryConvertSelection(focused, original, out string? newValue, out int selLength))
+                                if (TryConvertSelection(focused, original, out string? newValue, out int selLength, out direction))
                                 {
                                     valuePattern.SetValue(newValue);
                                     return $"Converted {selLength} selected chars via UI Automation.";
@@ -102,7 +104,7 @@ namespace PersianKeyboardConverter.Services
                                 // Unknown state deliberately converts everything instead of
                                 // falling to the clipboard: masked fields can't be copied, so
                                 // the clipboard path would wrongly report "nothing to convert".
-                                var direction = KeyboardMapper.IsMostlyPersian(original)
+                                direction = KeyboardMapper.IsMostlyPersian(original)
                                     ? KeyboardMapper.Direction.PersianToEnglish
                                     : KeyboardMapper.Direction.EnglishToPersian;
 
@@ -139,7 +141,7 @@ namespace PersianKeyboardConverter.Services
             // Covers controls without ValuePattern (browsers, terminals, editors, …)
             // via Ctrl+C → convert → Ctrl+V. The selection is detected through UIA
             // when available, otherwise probed by copying without Ctrl+A first.
-            return ConvertViaClipboard(hasSelection);
+            return ConvertViaClipboard(hasSelection, out direction);
         }
 
         /// <summary>
@@ -748,17 +750,18 @@ namespace PersianKeyboardConverter.Services
         /// (no TextPattern, no active selection, or offsets that don't match the
         /// selection text) so the caller can fall back to the clipboard path.
         /// </summary>
-        private static bool TryConvertSelection(AutomationElement element, string fullText, out string? newValue, out int convertedChars)
+        private static bool TryConvertSelection(AutomationElement element, string fullText, out string? newValue, out int convertedChars, out KeyboardMapper.Direction direction)
         {
             newValue = null;
             convertedChars = 0;
+            direction = KeyboardMapper.Direction.Auto;
 
             if (!TryGetSelectionBounds(element, fullText, out int start, out int end))
                 return false;
 
             string selected = fullText.Substring(start, end - start);
 
-            var direction = KeyboardMapper.IsMostlyPersian(selected)
+            direction = KeyboardMapper.IsMostlyPersian(selected)
                 ? KeyboardMapper.Direction.PersianToEnglish
                 : KeyboardMapper.Direction.EnglishToPersian;
 
@@ -899,8 +902,9 @@ namespace PersianKeyboardConverter.Services
         // Clipboard simulation
         // ─────────────────────────────────────────────────────────────────────────
 
-        private static string ConvertViaClipboard(bool? selectionState)
+        private static string ConvertViaClipboard(bool? selectionState, out KeyboardMapper.Direction direction)
         {
+            direction = KeyboardMapper.Direction.Auto;
             lock (InputLock)
             {
             // 1. Preserve existing clipboard content
@@ -938,7 +942,10 @@ namespace PersianKeyboardConverter.Services
                     return "Nothing to convert (empty or no selection).";
 
                 // 6. Convert and paste
-                string converted = KeyboardMapper.Convert(original);
+                direction = KeyboardMapper.IsMostlyPersian(original)
+                    ? KeyboardMapper.Direction.PersianToEnglish
+                    : KeyboardMapper.Direction.EnglishToPersian;
+                string converted = KeyboardMapper.Convert(original, direction);
 
                 for (int i = 0; i < 5; i++)           // SetText can fail if clipboard is locked
                 {

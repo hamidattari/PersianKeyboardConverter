@@ -111,16 +111,23 @@ namespace PersianKeyboardConverter
             Thread.Sleep(50);
 
             string result;
+            var direction = KeyboardMapper.Direction.Auto;
             try
             {
                 // Converts the selected portion of the focused field when there is an
                 // active selection, otherwise the whole field content.
-                result = TextService.ConvertFocusedText();
+                result = TextService.ConvertFocusedText(out direction);
             }
             catch (Exception ex)
             {
                 result = $"Error: {ex.Message}";
             }
+
+            // Follow the converted text with the matching input language, so the
+            // user's next keystrokes continue in the target layout (en → fa or
+            // fa → en). Direction.Auto (empty/error) leaves the layout untouched.
+            if (SettingsService.Current.SwitchLayoutOnConvert)
+                KeyboardLayoutSwitcher.SwitchTo(direction);
 
             if (SettingsService.Current.ShowNotifications)
             {

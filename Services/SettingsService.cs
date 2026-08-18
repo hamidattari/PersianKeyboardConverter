@@ -17,6 +17,7 @@ namespace PersianKeyboardConverter.Services
         public uint TranslationHotkeyModifiers { get; set; } = HotkeyManager.MOD_NONE | HotkeyManager.MOD_NOREPEAT;
         public bool ConversionEnabled { get; set; } = true;
         public bool ShowNotifications { get; set; } = true;
+        public bool SwitchLayoutOnConvert { get; set; } = true;
         public bool StartWithWindows { get; set; } = false;
     }
 
